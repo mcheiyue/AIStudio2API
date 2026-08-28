@@ -1,0 +1,17 @@
+.git
+.github
+.env
+.env.*
+auth
+runtime
+node_modules
+web/node_modules
+web/dist
+internal/webui/dist
+*.exe
+aistudio2api
+aistudio2api-linux
+compose.deploy.yml
+docs
+*.md
+!README.md
