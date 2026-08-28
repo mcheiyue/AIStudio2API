@@ -179,11 +179,9 @@ func (s StorageState) Validate() error {
 		if cookie.Path == "" || cookie.Path[0] != '/' {
 			return fmt.Errorf("storage state Cookie %s 的路径无效", cookie.Name)
 		}
-		switch cookie.SameSite {
-		case "", "Lax", "Strict", "None":
-		default:
-			return fmt.Errorf("storage state Cookie %s 的 SameSite 无效", cookie.Name)
-		}
+		// SameSite 接受浏览器（含 Firefox 分区 cookie）导出的任意值；
+		// 构造请求 Cookie 头时不使用 SameSite，此处仅做存在性占位，不做枚举拒绝
+		_ = cookie.SameSite
 	}
 	for index, origin := range s.Origins {
 		parsed, err := url.Parse(origin.Origin)
