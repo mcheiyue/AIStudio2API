@@ -1,11 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -498,6 +500,23 @@ func (s *server) handleGeminiCountTokens(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, request aistudio.GenerateRequest, stream bool) {
+	// Build App 中继路径：账号 mode=buildapp 时，原始 Gemini 请求经 applet 反代到 generativelanguage，
+	// 不走 WAA 私有 RPC。request 已被解析消费，这里重建请求体再转发。
+	if request.AccountID != "" && s.service.AccountMode(request.AccountID) == aistudio.AccountModeBuildApp {
+		body, mErr := json.Marshal(request)
+		if mErr != nil {
+			writeGeminiError(w, http.StatusInternalServerError, "buildapp_error", mErr.Error())
+			return
+		}
+		proxyReq := r.Clone(r.Context())
+		proxyReq.Body = io.NopCloser(bytes.NewReader(body))
+		proxyReq.ContentLength = int64(len(body))
+		proxyReq.Header.Set("Content-Type", "application/json")
+		if err := s.service.ServeBuildApp(r.Context(), w, proxyReq, request.AccountID); err != nil {
+			writeGeminiError(w, http.StatusBadGateway, "buildapp_error", err.Error())
+		}
+		return
+	}
 	events, err := s.service.Generate(r.Context(), request)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {

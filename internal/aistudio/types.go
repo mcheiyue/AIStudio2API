@@ -3,6 +3,7 @@ package aistudio
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 )
 
 // Role 表示规范消息角色
@@ -309,4 +310,8 @@ type Service interface {
 	Models(context.Context) ([]Model, error)
 	CountTokens(context.Context, TokenCountRequest) (TokenCount, error)
 	Generate(context.Context, GenerateRequest) (<-chan Event, error)
+	// AccountMode 返回账号实际生效的传输层模式（未知账号返回空串）。
+	AccountMode(accountID string) string
+	// ServeBuildApp 把原始 HTTP 请求经账号的 Build App 中继 worker 反代到 generativelanguage。
+	ServeBuildApp(ctx context.Context, rw http.ResponseWriter, r *http.Request, accountID string) error
 }

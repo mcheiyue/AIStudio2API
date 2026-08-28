@@ -40,6 +40,8 @@ func newRuntime(ctx context.Context, cfg config.Config) (aistudio.Service, *runt
 
 	requests.log("service", "INFO", "应用启动 | 3/4 | 装配协议运行时")
 	pool := aistudio.NewAccountPool(accounts, cfg.PerAccountConcurrency)
+	// buildapp 模式账号运行时：Camoufox 路径 + WS 中继基端口（每账号 wsBasePort+N）
+	pool.SetBuildAppRuntime(camoufoxPath, 9998)
 	headers, err := newAccountHeaderProvider(accounts, cfg.Proxy)
 	if err != nil {
 		return nil, nil, nil, err
@@ -1243,6 +1245,16 @@ func (service *trackedService) CountTokens(ctx context.Context, request aistudio
 	count, requestErr := service.service.CountTokens(requestCtx, request)
 	api.SetAccessLogError(requestCtx, requestErr)
 	return count, requestErr
+}
+
+// AccountMode 委托底层 Service。
+func (service *trackedService) AccountMode(accountID string) string {
+	return service.service.AccountMode(accountID)
+}
+
+// ServeBuildApp 委托底层 Service。
+func (service *trackedService) ServeBuildApp(ctx context.Context, rw http.ResponseWriter, r *http.Request, accountID string) error {
+	return service.service.ServeBuildApp(ctx, rw, r, accountID)
 }
 
 // GenerateVideo 创建一个 Veo 长任务

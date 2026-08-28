@@ -15,6 +15,7 @@ import (
 	"time"
 
 	appconfig "github.com/Mag1cFall/AIStudio2API/internal/config"
+	"github.com/Mag1cFall/AIStudio2API/internal/buildapp"
 	"github.com/gofrs/flock"
 )
 
@@ -67,6 +68,29 @@ type AccountConfig struct {
 	Proxy    string `json:"proxy"`
 	Locale   string `json:"locale"`
 	Timezone string `json:"timezone"`
+	// Mode 选择该账号的传输层：空或 "playground" 走原 WAA 私有 RPC；"buildapp" 走 Build App 中继（internal/buildapp）。
+	Mode string `json:"mode,omitempty"`
+	// BuildAppKey 为账号级 AI Studio API key，仅 Mode=buildapp 时使用，注入 proxy_request 的 x-goog-api-key 头。
+	BuildAppKey string `json:"build_app_key,omitempty"`
+	// BuildAppURL 为 Mode=buildapp 时使用的 Build App applet 地址（应 fork 自 cab9ab6c 的、本账号自有 app，
+	// 用本账号会话鉴权；默认公共 applet cab9ab6c 已被 Google 403）。为空则回退到 buildapp.AppletURL。
+	BuildAppURL string `json:"build_app_url,omitempty"`
+}
+
+// AccountMode 标识账号传输层类型
+const (
+	// AccountModePlayground 走原 aistudio.google.com 私有 RPC（WAA）
+	AccountModePlayground = "playground"
+	// AccountModeBuildApp 走 Build App 中继（internal/buildapp，WS 9998 → applet → generativelanguage）
+	AccountModeBuildApp = "buildapp"
+)
+
+// EffectiveMode 返回账号实际生效的传输层模式（空值归一到 playground）
+func (c AccountConfig) EffectiveMode() string {
+	if c.Mode == AccountModeBuildApp {
+		return AccountModeBuildApp
+	}
+	return AccountModePlayground
 }
 
 // ResourceBinding 记录上游资源的创建账户
@@ -181,6 +205,12 @@ type AccountPool struct {
 	perAccountConcurrency int
 	next                  int
 	changed               chan struct{}
+
+	// buildapp 运行时（懒加载账号级 worker）
+	buildappWorkers map[string]*BuildAppWorker
+	buildappMu      sync.Mutex
+	camoufoxPath    string
+	wsBasePort      int
 }
 
 // AccountLease 表示一个账户请求槽位
@@ -506,6 +536,7 @@ func NewAccountPool(accounts []*Account, perAccountConcurrency int) *AccountPool
 	p := &AccountPool{
 		accounts: append([]*Account(nil), accounts...), byID: make(map[string]*Account, len(accounts)),
 		resources: make(map[string]string), perAccountConcurrency: perAccountConcurrency, changed: make(chan struct{}),
+		buildappWorkers: make(map[string]*BuildAppWorker), wsBasePort: 9998,
 	}
 	for _, account := range p.accounts {
 		if account == nil {
@@ -526,6 +557,55 @@ func NewAccountPool(accounts []*Account, perAccountConcurrency int) *AccountPool
 		}
 	}
 	return p
+}
+
+// SetBuildAppRuntime 设置 buildapp 模式账号运行时（Camoufox 路径 + WS 基端口）。
+// 每个 buildapp 账号占用 wsBasePort + N 一个独占端口。
+func (p *AccountPool) SetBuildAppRuntime(camoufoxPath string, wsBasePort int) {
+	p.buildappMu.Lock()
+	defer p.buildappMu.Unlock()
+	p.camoufoxPath = camoufoxPath
+	if wsBasePort > 0 {
+		p.wsBasePort = wsBasePort
+	}
+}
+
+// BuildAppWorker 懒加载并缓存账号的 Build App 中继 worker（每账号一个）。
+// 仅对 EffectiveMode()==buildapp 的账号有效。
+func (p *AccountPool) BuildAppWorker(ctx context.Context, accountID string) (*BuildAppWorker, error) {
+	p.buildappMu.Lock()
+	if w, ok := p.buildappWorkers[accountID]; ok {
+		p.buildappMu.Unlock()
+		return w, nil
+	}
+	p.buildappMu.Unlock()
+
+	acc := p.byID[accountID]
+	if acc == nil {
+		return nil, ErrAccountNotFound
+	}
+	if acc.Config.EffectiveMode() != AccountModeBuildApp {
+		return nil, fmt.Errorf("账号 %s 不是 buildapp 模式", accountID)
+	}
+	ss := filepath.Join(acc.Directory, storageStateName)
+	applet := acc.Config.BuildAppURL
+	if applet == "" {
+		applet = buildapp.AppletURL
+	}
+
+	p.buildappMu.Lock()
+	port := p.wsBasePort + len(p.buildappWorkers)
+	p.buildappMu.Unlock()
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	w, err := NewBuildAppWorker(ss, p.camoufoxPath, applet, addr)
+	if err != nil {
+		return nil, err
+	}
+	p.buildappMu.Lock()
+	p.buildappWorkers[accountID] = w
+	p.buildappMu.Unlock()
+	return w, nil
 }
 
 // Account 返回稳定 ID 对应的账户

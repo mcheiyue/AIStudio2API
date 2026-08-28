@@ -71,6 +71,26 @@ func NewPooledService(pool *AccountPool, client *Client) (*PooledService, error)
 	return &PooledService{pool: pool, client: client}, nil
 }
 
+// ServeBuildApp 把原始 HTTP 请求经账号的 Build App 中继 worker 反代到 generativelanguage。
+// 仅对 mode=buildapp 的账号调用；否则应由调用方走 WAA（DoProtected）路径。
+func (s *PooledService) ServeBuildApp(ctx context.Context, rw http.ResponseWriter, r *http.Request, accountID string) error {
+	worker, err := s.pool.BuildAppWorker(ctx, accountID)
+	if err != nil {
+		return fmt.Errorf("获取 buildapp worker: %w", err)
+	}
+	worker.ServeHTTP(rw, r)
+	return nil
+}
+
+// AccountMode 返回账号实际生效的传输层模式（未知账号返回空串）。
+func (s *PooledService) AccountMode(accountID string) string {
+	acc, err := s.pool.Account(accountID)
+	if err != nil {
+		return ""
+	}
+	return acc.Config.EffectiveMode()
+}
+
 // NewPoolRequestContextProvider 创建账户协议上下文提供者
 func NewPoolRequestContextProvider(pool *AccountPool) (*PoolRequestContextProvider, error) {
 	if pool == nil {

@@ -113,6 +113,14 @@ func NewClient(options ClientOptions) (*Client, error) {
 	}, nil
 }
 
+// AccountMode 在纯协议客户端中无意义（无账户池），返回空串。
+func (c *Client) AccountMode(accountID string) string { return "" }
+
+// ServeBuildApp 纯协议客户端不支持 Build App 中继。
+func (c *Client) ServeBuildApp(ctx context.Context, rw http.ResponseWriter, r *http.Request, accountID string) error {
+	return fmt.Errorf("Client 不支持 buildapp 中继")
+}
+
 // RPCError 保存上游状态和协议错误码
 type RPCError struct {
 	Method     string
