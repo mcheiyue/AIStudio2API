@@ -63,8 +63,21 @@ func LaunchApplet(ctx context.Context, opts camoufoxnative.Options, ws *Server, 
 	if appletURL == "" {
 		appletURL = AppletURL
 	}
-	if err := cam.Navigate(ctx, appletURL); err != nil {
-		return nil, fmt.Errorf("navigate applet: %w", err)
+	// Google applet 页偶发 NS_ERROR_NET_RESET（Camoufox 网络抖动），重试导航避免一次失败即放弃
+	var navErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if navErr = cam.Navigate(ctx, appletURL); navErr == nil {
+			break
+		}
+		if strings.Contains(navErr.Error(), "NS_ERROR_NET_RESET") || strings.Contains(navErr.Error(), "net::") {
+			log.Printf("[buildapp] navigate attempt %d 失败（%v），重试", attempt, navErr)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		return nil, fmt.Errorf("navigate applet: %w", navErr)
+	}
+	if navErr != nil {
+		return nil, fmt.Errorf("navigate applet（重试 3 次均失败）: %w", navErr)
 	}
 	log.Printf("[buildapp] navigated to applet %s", appletURL)
 
@@ -158,33 +171,10 @@ func LaunchApplet(ctx context.Context, opts camoufoxnative.Options, ws *Server, 
 		return ""
 	}
 
-	// 反复点引导 + 探测 Preview，直到激活或超时（UI 点击偶发不稳定，拉长窗口）
-	activateDeadline := time.Now().Add(120 * time.Second)
-	activated := false
+	// 反复点引导 + 点 Preview，直到 ProxyClient 真正连上 9998（UI 点击偶发不稳定，点中装饰按钮也不算，
+	// 持续重试到 WS 就绪为止，窗口拉到 150s）
+	activateDeadline := time.Now().Add(150 * time.Second)
 	for time.Now().Before(activateDeadline) {
-		// 先尝试点 Preview/Run
-		if c := clickFn(runLabels); c != "" {
-			log.Printf("[buildapp] activated run mode: %s", c)
-			activated = true
-			break
-		}
-		// 否则点引导
-		for _, lbl := range onboard {
-			if c := clickFn([]string{lbl}); c != "" {
-				log.Printf("[buildapp] onboard click: %s", c)
-				time.Sleep(1200 * time.Millisecond)
-				break
-			}
-		}
-		time.Sleep(800 * time.Millisecond)
-	}
-	if !activated {
-		return nil, fmt.Errorf("failed to activate run mode within 120s")
-	}
-
-	// 等 WS 连接就绪（applet ProxyClient 连 9998）；Preview 后 applet 可能需数秒才连
-	deadline := time.Now().Add(90 * time.Second)
-	for time.Now().Before(deadline) {
 		if ws.Ready(authIndex) {
 			log.Printf("[buildapp] applet WS ready authIndex=%d", authIndex)
 			// ProxyClient 已激活，此刻再读 postMessage 全量（requestAuthIndex 在 run mode 激活后才发）
@@ -197,9 +187,20 @@ func LaunchApplet(ctx context.Context, opts camoufoxnative.Options, ws *Server, 
 			failed = false
 			return &Session{cam: cam, authIndex: authIndex, ws: ws}, nil
 		}
-		time.Sleep(2 * time.Second)
+		// 先点 Preview/Run（可能需多次才命中真实按钮）
+		if c := clickFn(runLabels); c != "" {
+			log.Printf("[buildapp] clicked run-mode label: %s (waiting WS)", c)
+		}
+		// 顺手点引导，避免引导对话框挡住 Preview
+		for _, lbl := range onboard {
+			if c := clickFn([]string{lbl}); c != "" {
+				log.Printf("[buildapp] onboard click: %s", c)
+				break
+			}
+		}
+		time.Sleep(2500 * time.Millisecond)
 	}
-	return nil, fmt.Errorf("applet WS not ready within 90s for authIndex=%d", authIndex)
+	return nil, fmt.Errorf("applet WS not ready within 150s for authIndex=%d", authIndex)
 }
 
 // Submit 构造 proxy_request 经 WS 转发给 applet，返回响应消息通道。
