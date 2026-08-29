@@ -580,9 +580,9 @@ func (p *AccountPool) BuildAppWorker(ctx context.Context, accountID string) (*Bu
 	}
 	p.buildappMu.Unlock()
 
-	acc := p.byID[accountID]
-	if acc == nil {
-		return nil, ErrAccountNotFound
+	acc, aerr := p.Account(accountID)
+	if aerr != nil {
+		return nil, aerr
 	}
 	if acc.Config.EffectiveMode() != AccountModeBuildApp {
 		return nil, fmt.Errorf("账号 %s 不是 buildapp 模式", accountID)

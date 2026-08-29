@@ -20,6 +20,7 @@ type geminiRequest struct {
 	GenerationConfig  geminiGenerationConfig `json:"generationConfig"`
 	Tools             []geminiToolGroup      `json:"tools"`
 	ToolConfig        geminiToolConfig       `json:"toolConfig"`
+	AccountID         string                 `json:"accountID,omitempty"`
 }
 
 type geminiContent struct {
@@ -264,6 +265,7 @@ func (request geminiRequest) toGenerateRequest(id string, model string) (aistudi
 	}
 	return aistudio.GenerateRequest{
 		ID: id, Model: model, System: system, Contents: contents, Config: config, Tools: tools,
+		AccountID: strings.TrimSpace(request.AccountID),
 	}, nil
 }
 
@@ -503,7 +505,15 @@ func (s *server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, re
 	// Build App 中继路径：账号 mode=buildapp 时，原始 Gemini 请求经 applet 反代到 generativelanguage，
 	// 不走 WAA 私有 RPC。request 已被解析消费，这里重建请求体再转发。
 	if request.AccountID != "" && s.service.AccountMode(request.AccountID) == aistudio.AccountModeBuildApp {
-		body, mErr := json.Marshal(request)
+		targetAccount := request.AccountID // 路由用的账号 ID，不得进入发给 Google 的请求体
+		// 只转发 applet 能识别的极简 body（contents + systemInstruction），
+		// 与本地 e2e 探针一致；完整 GenerateRequest 的 id/model/config/tools 字段会让
+		// applet 的 proxy browser 卡死（Google 300s 无回包）。
+		forward := map[string]any{"contents": request.Contents}
+		if request.System != "" {
+			forward["systemInstruction"] = map[string]any{"parts": []map[string]any{{"text": request.System}}}
+		}
+		body, mErr := json.Marshal(forward)
 		if mErr != nil {
 			writeGeminiError(w, http.StatusInternalServerError, "buildapp_error", mErr.Error())
 			return
@@ -512,7 +522,7 @@ func (s *server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, re
 		proxyReq.Body = io.NopCloser(bytes.NewReader(body))
 		proxyReq.ContentLength = int64(len(body))
 		proxyReq.Header.Set("Content-Type", "application/json")
-		if err := s.service.ServeBuildApp(r.Context(), w, proxyReq, request.AccountID); err != nil {
+		if err := s.service.ServeBuildApp(r.Context(), w, proxyReq, targetAccount); err != nil {
 			writeGeminiError(w, http.StatusBadGateway, "buildapp_error", err.Error())
 		}
 		return
