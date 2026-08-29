@@ -43,6 +43,12 @@ func NewBuildAppWorker(storageState, camoufoxPath, appletURL, addr string) (*Bui
 		Timezone:         "America/New_York",
 		Headless:         false,
 		Log:              os.Stderr,
+		// Camoufox 是独立进程，不会自动继承 GUI 浏览器的链式 HY2 代理；
+		// 不设则直连 Google 被重置（NS_ERROR_NET_RESET / 300s 无回包）。
+		// 运行时通过 BUILDAPP_PROXY 指定本地 Clash mixed 端口，如 socks5://127.0.0.1:7897。
+		Proxy: os.Getenv("BUILDAPP_PROXY"),
+		// applet 连本机 WS 中继（ws://127.0.0.1:9998）必须绕过代理，否则会被塞进 Clash 而连不上。
+		ProxyBypass: "127.0.0.1,localhost",
 	}
 	if _, err := buildapp.LaunchApplet(ctx, opts, srv, 0, appletURL); err != nil {
 		srv.Stop()
