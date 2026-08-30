@@ -93,6 +93,8 @@ type AdminAccount struct {
 	Models      []string `json:"models"`
 	BenefitTier string   `json:"benefit_tier"`
 	Message     string   `json:"message"`
+	// BuildAppWorker 仅 mode=buildapp 账号有值：idle/warming/ready/error
+	BuildAppWorker string `json:"build_app_worker,omitempty"`
 }
 
 // AccountInput 表示新增账户配置

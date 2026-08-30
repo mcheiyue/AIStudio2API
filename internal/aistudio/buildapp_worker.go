@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/buildapp"
@@ -28,12 +29,15 @@ func buildAppHeadless() bool {
 type BuildAppWorker struct {
 	server    *buildapp.Server
 	transport *buildapp.Transport
+	state     atomic.Value // 存 string：idle/warming/ready/error，由 NewBuildAppWorker 设置
 }
 
 // NewBuildAppWorker 启动账号的 Build App 中继：起 WS 服务 + Camoufox applet 会话。
 // storageState/appletURL 为该账号专属；addr 为本 worker 独占的 WS 监听地址（每账号一个端口）。
 func NewBuildAppWorker(storageState, camoufoxPath, appletURL, addr string) (*BuildAppWorker, error) {
 	srv := buildapp.NewServer()
+	w := &BuildAppWorker{server: srv}
+	w.state.Store("warming")
 	srv.SetHooks(
 		func(i int) { log.Printf("[buildapp] worker applet connected authIndex=%d", i) },
 		func(i int) { log.Printf("[buildapp] worker applet disconnected authIndex=%d", i) },
@@ -66,7 +70,18 @@ func NewBuildAppWorker(storageState, camoufoxPath, appletURL, addr string) (*Bui
 		return nil, err
 	}
 	transport := buildapp.NewTransport(srv, 0, "")
-	return &BuildAppWorker{server: srv, transport: transport}, nil
+	w.transport = transport
+	w.state.Store("ready")
+	return w, nil
+}
+
+// State 返回 worker 当前就绪态：warming（创建中）/ready（applet 已连中继）。
+// 不存在的 worker 由 AccountPool.BuildAppWorkerState 返回 idle。
+func (w *BuildAppWorker) State() string {
+	if v, ok := w.state.Load().(string); ok {
+		return v
+	}
+	return "idle"
 }
 
 // ServeHTTP 把原始 HTTP 请求经 applet 中继到 generativelanguage。

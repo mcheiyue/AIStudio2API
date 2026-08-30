@@ -1973,7 +1973,7 @@ func (service *trackedService) publishModelAccess() {
 	statuses := service.pool.Status()
 	accounts := make([]api.AdminAccount, 0, len(statuses))
 	for _, status := range statuses {
-		accounts = append(accounts, adminAccountDTO(status))
+		accounts = append(accounts, adminAccountDTO(service.pool, status))
 	}
 	service.requests.publish(api.AdminEvent{Type: "accounts", Data: map[string]any{"accounts": accounts}})
 	service.requests.publish(api.AdminEvent{Type: "models", Data: map[string]any{"models": service.modelSnapshot()}})

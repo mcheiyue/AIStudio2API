@@ -145,7 +145,7 @@ func (admin *runtimeAdmin) Accounts(context.Context) ([]api.AdminAccount, error)
 	statuses := admin.pool.Status()
 	accounts := make([]api.AdminAccount, 0, len(statuses))
 	for _, status := range statuses {
-		accounts = append(accounts, adminAccountDTO(status))
+		accounts = append(accounts, adminAccountDTO(admin.pool, status))
 	}
 	return accounts, nil
 }
@@ -599,7 +599,7 @@ func (admin *runtimeAdmin) publishRuntimeSnapshot(ctx context.Context, status ap
 func (admin *runtimeAdmin) account(accountID string) (api.AdminAccount, error) {
 	for _, status := range admin.pool.Status() {
 		if status.ID == accountID {
-			return adminAccountDTO(status), nil
+			return adminAccountDTO(admin.pool, status), nil
 		}
 	}
 	return api.AdminAccount{}, accountOperationError(fmt.Errorf("%w: %s", aistudio.ErrAccountNotFound, accountID))
@@ -619,13 +619,14 @@ func (admin *runtimeAdmin) loginRequest(account *aistudio.Account, directory str
 	}
 }
 
-func adminAccountDTO(status aistudio.AccountStatus) api.AdminAccount {
+func adminAccountDTO(pool *aistudio.AccountPool, status aistudio.AccountStatus) api.AdminAccount {
 	models := make([]string, len(status.Models))
 	copy(models, status.Models)
 	return api.AdminAccount{
 		ID: status.ID, Label: status.Label, Enabled: status.Enabled, State: string(status.State),
 		Proxy: status.Proxy, Locale: status.Locale, Timezone: status.Timezone,
 		Models: models, BenefitTier: status.BenefitTier, Message: status.Message,
+		BuildAppWorker: pool.BuildAppWorkerState(status.ID),
 	}
 }
 
