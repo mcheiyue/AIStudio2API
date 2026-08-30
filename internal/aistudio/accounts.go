@@ -176,6 +176,8 @@ type AccountStatus struct {
 	Proxy       string                   `json:"proxy"`
 	Locale      string                   `json:"locale"`
 	Timezone    string                   `json:"timezone"`
+	Mode        string                   `json:"mode,omitempty"`
+	BuildAppURL string                   `json:"build_app_url,omitempty"`
 	Models      []string                 `json:"models"`
 	BenefitTier string                   `json:"benefit_tier"`
 	Cooldowns   map[string]CooldownState `json:"-"`
@@ -710,6 +712,18 @@ func (p *AccountPool) BuildAppWorker(ctx context.Context, accountID string) (*Bu
 	p.buildappWorkers[accountID] = w
 	p.buildappMu.Unlock()
 	return w, nil
+}
+
+// BuildAppWorkerState 返回账号 Build App worker 就绪态。
+// 无 worker（未创建或并非 buildapp 模式）返回 idle；否则取 worker.State()。
+func (p *AccountPool) BuildAppWorkerState(accountID string) string {
+	p.buildappMu.Lock()
+	w, ok := p.buildappWorkers[accountID]
+	p.buildappMu.Unlock()
+	if !ok {
+		return "idle"
+	}
+	return w.State()
 }
 
 // Account 返回稳定 ID 对应的账户
@@ -2083,6 +2097,8 @@ func (p *AccountPool) Status() []AccountStatus {
 			Proxy:       account.Config.Proxy,
 			Locale:      account.Config.Locale,
 			Timezone:    account.Config.Timezone,
+			Mode:        account.Config.Mode,
+			BuildAppURL: account.Config.BuildAppURL,
 			Models:      models,
 			BenefitTier: account.BenefitTier.String(),
 			Cooldowns:   cloneCooldowns(account.runtime.Cooldowns),
