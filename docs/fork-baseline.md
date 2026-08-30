@@ -58,3 +58,15 @@
 - 2267 账号（Pro）走 Build App（`mode=buildapp` + 自有 fork app `7f4818a8`）端到端返回 `200 OK` + 真实 gemini-2.5-flash 回复。
 - 冷启动首次调用 Google 约 155s（accountID 首次 Build App 调用慢），热 worker 约 8s。
 - 运行时需 `BUILDAPP_PROXY=socks5://127.0.0.1:7897`（本地 Clash mixed 端口）+ `ProxyBypass=127.0.0.1,localhost`。
+
+## 6. 参考项目（外部，非 fork 代码依赖）
+
+grilling 期间对比过的其他 3 个 AI Studio 2API 代理。**仅 iBUHub 有代码级协议依赖**（我们的 Build App C 路径是其 `ProxyServerSystem` 的 Go 重写）；其余两者仅概念参考、无代码复用，无需各自标基线。
+
+| 项目 | 上游 | 基线 commit | 参考价值 | 基线文档 |
+|------|------|-------------|----------|----------|
+| iBUHub / AIStudioToAPI | iBUHub/AIStudioToAPI | `3ff4b60` | **高**：Build App 协议来源，C 路径直接移植 | [docs/ref-ibuhub-baseline.md](./ref-ibuhub-baseline.md) |
+| chrysoljq / aistudio-api | chrysoljq/aistudio-api | `f2c51b8` | 低：capture/replay 模板架构，仅对比未复用 | 无（仅此处一行出处） |
+| CJackHwang / AIstudioProxyAPI | CJackHwang/AIStudioProxyAPI | `044c3db` | 低：proxy_server，仅登录/会话模式对比，fork 已原生支持 | 无（仅此处一行出处） |
+
+> 三者本地均为浅克隆（仅 1 个 tip commit），同步前需 `git fetch` 拉全量。iBUHub 的协议细节见其专属基线文档；另两者若日后要复用某特性，再补基线。
