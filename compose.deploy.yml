@@ -9,6 +9,9 @@ services:
     network_mode: host
     environment:
       PROXY: socks5://127.0.0.1:1080
+      # Build App 的 Camoufox 需经本机 HY2 出口（与 PROXY 同源），且服务器无头运行
+      BUILDAPP_PROXY: socks5://127.0.0.1:1080
+      BUILDAPP_HEADLESS: "true"
       # AISTUDIO_AUTH_STATES: auth        # 默认即此
       # LISTEN_ADDR: 127.0.0.1:2048       # 默认即此
       WARM_WORKER_LIMIT: "0"               # 按需实例化（1.8G 内存红线），需要预热再调
