@@ -48,6 +48,8 @@ func main() {
 		StorageStatePath: *storageState,
 		Locale:           "en-US",
 		Timezone:         "America/New_York",
+		Proxy:            os.Getenv("BUILDAPP_PROXY"),
+		ProxyBypass:      "127.0.0.1,localhost",
 		Headless:         false,
 		Log:              os.Stderr,
 		StartupProgress: func(s camoufoxnative.StartupStage) {

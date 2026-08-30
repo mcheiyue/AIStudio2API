@@ -63,15 +63,16 @@ func LaunchApplet(ctx context.Context, opts camoufoxnative.Options, ws *Server, 
 	if appletURL == "" {
 		appletURL = AppletURL
 	}
-	// Google applet 页偶发 NS_ERROR_NET_RESET（Camoufox 网络抖动），重试导航避免一次失败即放弃
+	// Google applet 页偶发 NS_ERROR_NET_RESET（Camoufox 网络抖动 / Clash HY2 瞬时重置），
+	// 多次重试导航避免一次失败即放弃（最多 8 次，退避 3s）
 	var navErr error
-	for attempt := 1; attempt <= 3; attempt++ {
+	for attempt := 1; attempt <= 8; attempt++ {
 		if navErr = cam.Navigate(ctx, appletURL); navErr == nil {
 			break
 		}
 		if strings.Contains(navErr.Error(), "NS_ERROR_NET_RESET") || strings.Contains(navErr.Error(), "net::") {
 			log.Printf("[buildapp] navigate attempt %d 失败（%v），重试", attempt, navErr)
-			time.Sleep(2 * time.Second)
+			time.Sleep(3 * time.Second)
 			continue
 		}
 		return nil, fmt.Errorf("navigate applet: %w", navErr)
@@ -96,21 +97,40 @@ func LaunchApplet(ctx context.Context, opts camoufoxnative.Options, ws *Server, 
 		log.Printf("[buildapp] postMessage types seen: %s", strings.TrimSpace(msgs))
 	}
 
-	// 诊断：dump 所有（含同域 iframe）可见按钮文本，确认真实 UI
-	if dump, err := cam.EvaluateString(ctx, `(function(){
-		const docs=[document];
-		for(const f of document.querySelectorAll('iframe')){try{if(f.contentDocument)docs.push(f.contentDocument);}catch(e){}}
-		const els=[];
-		for(const d of docs){for(const e of d.querySelectorAll('button,[role=button]')){if(e.offsetParent!==null){const t=(e.innerText||'').trim();if(t)els.push(t);}}}
-		return JSON.stringify(els);
-	})()`); err == nil {
-		log.Printf("[buildapp] visible buttons: %s", dump)
+	// 诊断：dump 所有 context（含跨域 iframe）可见按钮文本，确认真实 UI
+	dumpButtons := func(tag string) {
+		all, e := cam.AllContexts(ctx)
+		if e != nil {
+			log.Printf("[buildapp] %s AllContexts error: %v", tag, e)
+			if raw, re := cam.DebugRawTree(ctx); re == nil {
+				log.Printf("[buildapp] %s raw tree: %s", tag, raw)
+			}
+		} else if len(all) == 0 {
+			log.Printf("[buildapp] %s AllContexts empty", tag)
+			if raw, re := cam.DebugRawTree(ctx); re == nil {
+				log.Printf("[buildapp] %s raw tree: %s", tag, raw)
+			}
+		}
+		for _, fc := range all {
+			if dump, err := cam.EvaluateStringInContext(ctx, fc, `JSON.stringify(Array.from(document.querySelectorAll('button,[role=button],a')).filter(function(e){return e.offsetParent!==null}).map(function(e){return (e.innerText||'').trim()}).filter(function(t){return t}))`); err == nil {
+				log.Printf("[buildapp] %s visible buttons (ctx %s): %s", tag, fc, strings.TrimSpace(dump))
+			} else {
+				log.Printf("[buildapp] %s dump err (ctx %s): %v", tag, fc, err)
+			}
+			if txt, err := cam.EvaluateStringInContext(ctx, fc, `(document.body&&document.body.innerText||'').slice(0,300)`); err == nil {
+				log.Printf("[buildapp] %s body text (ctx %s): %s", tag, fc, strings.TrimSpace(txt))
+			}
+		}
+	}
+	dumpButtons("pre-click")
+	if topURL, err := cam.EvaluateString(ctx, `location.href`); err == nil {
+		log.Printf("[buildapp] top url: %s", strings.TrimSpace(topURL))
 	}
 	// 等页面稳定
 	time.Sleep(3 * time.Second)
 
 	// 点穿引导 + 激活 Preview（ProxyClient 才会连 9998）
-	onboard := []string{"Continue to the app", "Skip", "Next", "Got it", "Allow", "Accept", "同意", "继续"}
+	onboard := []string{"Continue to the app", "Skip", "Next", "Got it", "Allow", "Accept", "同意", "继续", "close", "开"}
 	runLabels := []string{"Preview", "Run", "▶", "运行", "预览", "Update preview", "更新预览"}
 	// 引导/Preview 在跨域 iframe（run.app）内，需对子帧上下文点击
 	frameURLs := []string{"run.app", "bscframe", "_/bscframe", "aistudio.google.com/app/_"}
@@ -118,26 +138,35 @@ func LaunchApplet(ctx context.Context, opts camoufoxnative.Options, ws *Server, 
 		js := fmt.Sprintf(`(function(){
 			const labels = %s;
 			const norm = s => (s||'').trim().toLowerCase();
-			const hit = el => {
+			// 匹配：精确相等，或长标签(≥6字)做包含匹配（容许图标前缀如 "bolt\ngo to build"）。
+			// 短标签(如 "skip")只精确匹配，避免误命中 "skip to main content" 这类页脚链接。
+			const match = el => {
 				const t = norm(el.innerText);
 				if (!t || el.offsetParent === null) return false;
-				return labels.some(l => t === norm(l) || t.includes(norm(l)));
+				return labels.some(l => {
+					const nl = norm(l);
+					if (t === nl) return true;
+					if (nl.length >= 6 && t.includes(nl)) return true;
+					return false;
+				});
 			};
-			// 优先真实交互元素
-			for (const sel of ['button','[role=button]','a']) {
+			const fire = el => {
+				try { for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) el.dispatchEvent(new MouseEvent(type,{bubbles:true,cancelable:true,view:window})); } catch(e){ el.click(); }
+				return el.innerText.trim();
+			};
+			// 第一遍：真实交互元素（button / [role=button]），排除 <a> 页脚链接
+			for (const sel of ['button','[role=button]']) {
 				for (const el of document.querySelectorAll(sel)) {
-					if (hit(el)) {
-						try { for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) el.dispatchEvent(new MouseEvent(type,{bubbles:true,cancelable:true,view:window})); } catch(e){ el.click(); }
-						return el.innerText.trim();
-					}
+					if (match(el)) return fire(el);
 				}
 			}
-			// 退而求其次：div 精确匹配
+			// 第二遍：<a> 链接（仅当没有真实按钮命中时才可能命中，此时说明没匹配到目标）
+			for (const el of document.querySelectorAll('a')) {
+				if (match(el)) return fire(el);
+			}
+			// 第三遍：div 匹配（保留原逻辑兜底）
 			for (const el of document.querySelectorAll('div')) {
-				if (norm(el.innerText) === norm(labels[0]) || (labels.some(l=>norm(el.innerText)===norm(l)))) {
-					try { for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) el.dispatchEvent(new MouseEvent(type,{bubbles:true,cancelable:true,view:window})); } catch(e){ el.click(); }
-					return el.innerText.trim();
-				}
+				if (match(el)) return fire(el);
 			}
 			return '';
 		})()`, mustJSON(labels))
@@ -149,6 +178,9 @@ func LaunchApplet(ctx context.Context, opts camoufoxnative.Options, ws *Server, 
 			res, err = cam.EvaluateStringInContext(ctx, contextID, js)
 		}
 		if err != nil {
+			if contextID != "" {
+				log.Printf("[buildapp] clickIn err (ctx %s): %v", contextID, err)
+			}
 			return "", err
 		}
 		res = strings.TrimSpace(res)
@@ -158,8 +190,17 @@ func LaunchApplet(ctx context.Context, opts camoufoxnative.Options, ws *Server, 
 		return res, nil
 	}
 	clickFn := func(labels []string) string {
+		// 已知子帧优先（run.app 等）
 		for _, fu := range frameURLs {
 			if fc, e := cam.FindFrame(ctx, fu); e == nil && fc != "" {
+				if r, _ := clickIn(fc, labels); r != "" {
+					return r
+				}
+			}
+		}
+		// 兜底：遍历所有 browsing context（含跨域 iframe），避免漏掉引导/Preview 按钮
+		if all, e := cam.AllContexts(ctx); e == nil {
+			for _, fc := range all {
 				if r, _ := clickIn(fc, labels); r != "" {
 					return r
 				}
@@ -174,7 +215,9 @@ func LaunchApplet(ctx context.Context, opts camoufoxnative.Options, ws *Server, 
 	// 反复点引导 + 点 Preview，直到 ProxyClient 真正连上 9998（UI 点击偶发不稳定，点中装饰按钮也不算，
 	// 持续重试到 WS 就绪为止，窗口拉到 150s）
 	activateDeadline := time.Now().Add(150 * time.Second)
+	iter := 0
 	for time.Now().Before(activateDeadline) {
+		iter++
 		if ws.Ready(authIndex) {
 			log.Printf("[buildapp] applet WS ready authIndex=%d", authIndex)
 			// ProxyClient 已激活，此刻再读 postMessage 全量（requestAuthIndex 在 run mode 激活后才发）
@@ -186,6 +229,13 @@ func LaunchApplet(ctx context.Context, opts camoufoxnative.Options, ws *Server, 
 			}
 			failed = false
 			return &Session{cam: cam, authIndex: authIndex, ws: ws}, nil
+		}
+		// 每 10 轮 dump 一次当前 UI（按钮/URL），定位 3222 卡在哪个页面
+		if iter%10 == 1 {
+			dumpButtons(fmt.Sprintf("iter%d", iter))
+			if topURL, err := cam.EvaluateString(ctx, `location.href`); err == nil {
+				log.Printf("[buildapp] iter%d top url: %s", iter, strings.TrimSpace(topURL))
+			}
 		}
 		// 先点 Preview/Run（可能需多次才命中真实按钮）
 		if c := clickFn(runLabels); c != "" {

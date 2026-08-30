@@ -2,6 +2,7 @@ package camoufoxnative
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -192,10 +193,77 @@ func (s *Session) FindFrame(ctx context.Context, urlContains string) (string, er
 		}
 		return ""
 	}
-	if found := walk(tree); found != "" {
-		return found, nil
+	// browsingContext.getTree 的 result 键：Camoufox（Firefox 系 BiDi）用 "contexts"，
+	// 标准 BiDi 用 "tree"。两个都尝试，取数组再遍历节点。
+	nodes, ok := tree["contexts"].([]any)
+	if !ok {
+		nodes, ok = tree["tree"].([]any)
+	}
+	if ok {
+		for _, n := range nodes {
+			if node, ok := n.(map[string]any); ok {
+				if found := walk(node); found != "" {
+					return found, nil
+				}
+			}
+		}
 	}
 	return "", nil
+}
+
+// AllContexts 返回当前页面所有 browsing context（含跨域 iframe）的 context ID，
+// 用于点击逻辑遍历子帧——FindFrame 仅靠 URL 子串可能漏掉跨域 applet 帧（run.app）。
+func (s *Session) AllContexts(ctx context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errors.New("Camoufox session 已关闭")
+	}
+	tree, err := s.client.command(ctx, "browsingContext.getTree", map[string]any{"maxDepth": 10, "root": s.contextID})
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	var walk func(node map[string]any)
+	walk = func(node map[string]any) {
+		if cid, _ := node["context"].(string); cid != "" {
+			out = append(out, cid)
+		}
+		children, _ := node["children"].([]any)
+		for _, child := range children {
+			if c, ok := child.(map[string]any); ok {
+				walk(c)
+			}
+		}
+	}
+	// 取 getTree result 的数组再遍历节点；键名 Camoufox 用 "contexts"，标准 BiDi 用 "tree"。
+	nodes, ok := tree["contexts"].([]any)
+	if !ok {
+		nodes, ok = tree["tree"].([]any)
+	}
+	if ok {
+		for _, n := range nodes {
+			if node, ok := n.(map[string]any); ok {
+				walk(node)
+			}
+		}
+	}
+	return out, nil
+}
+
+// DebugRawTree 返回 browsingContext.getTree 的原始响应（用于诊断 AllContexts 为何为空）。
+func (s *Session) DebugRawTree(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return "", errors.New("Camoufox session 已关闭")
+	}
+	tree, err := s.client.command(ctx, "browsingContext.getTree", map[string]any{"maxDepth": 10, "root": s.contextID})
+	if err != nil {
+		return "", err
+	}
+	b, _ := json.Marshal(tree)
+	return string(b), nil
 }
 
 // WaitFor 在顶层 context 轮询表达式直至为 true 或超时。
