@@ -28,6 +28,8 @@ const draft = reactive<AccountDraft>({
   proxy: '',
   locale: defaultAccountLocale,
   timezone: defaultAccountTimezone,
+  mode: 'playground',
+  build_app_url: '',
 })
 
 const stateKeys: Record<AccountState, TranslationKey> = {
@@ -50,6 +52,8 @@ function resetDraft(): void {
   draft.proxy = ''
   draft.locale = defaultAccountLocale
   draft.timezone = defaultAccountTimezone
+  draft.mode = 'playground'
+  draft.build_app_url = ''
 }
 
 function beginAdd(): void {
@@ -65,6 +69,8 @@ function beginEdit(account: Account): void {
   draft.proxy = account.proxy
   draft.locale = account.locale
   draft.timezone = account.timezone
+  draft.mode = account.mode
+  draft.build_app_url = account.build_app_url
   showAdd.value = true
 }
 
@@ -95,13 +101,15 @@ async function saveAccount(): Promise<void> {
 async function toggleAccount(account: Account): Promise<void> {
   pendingAction.value = `toggle:${account.id}`
   try {
-    await api.updateAccount(account.id, {
-      label: account.label,
-      enabled: !account.enabled,
-      proxy: account.proxy,
-      locale: account.locale,
-      timezone: account.timezone,
-    })
+      await api.updateAccount(account.id, {
+        label: account.label,
+        enabled: !account.enabled,
+        proxy: account.proxy,
+        locale: account.locale,
+        timezone: account.timezone,
+        mode: account.mode,
+        build_app_url: account.build_app_url,
+      })
     emit('refresh')
   } catch (error) {
     actionError(error)
@@ -216,6 +224,12 @@ async function removeAccount(account: Account): Promise<void> {
           <div>
             <span class="text-gray-500">{{ t('accounts.benefitTier') }}</span>
             <div class="text-gray-300">{{ account.benefit_tier }}</div>
+          </div>
+          <div>
+            <span class="text-gray-500">{{ t('accounts.mode') }}</span>
+            <div class="text-gray-300">
+              {{ account.mode === 'buildapp' ? t('accounts.modeBuildapp') : t('accounts.modePlayground') }}
+            </div>
           </div>
         </div>
 
@@ -348,10 +362,29 @@ async function removeAccount(account: Account): Promise<void> {
                 <input
                   v-model.trim="draft.timezone"
                   class="w-full rounded border border-[#30363d] bg-[#0d1117] px-3 py-2 text-white transition focus:border-blue-500 focus:outline-none"
-                  required
-                />
+                required
+              />
               </label>
             </div>
+            <label class="block">
+              <span class="mb-1 block text-sm font-medium text-gray-400">{{ t('accounts.mode') }}</span>
+              <select
+                v-model="draft.mode"
+                class="w-full rounded border border-[#30363d] bg-[#0d1117] px-3 py-2 text-white transition focus:border-blue-500 focus:outline-none"
+              >
+                <option value="playground">{{ t('accounts.modePlayground') }}</option>
+                <option value="buildapp">{{ t('accounts.modeBuildapp') }}</option>
+              </select>
+            </label>
+            <label v-if="draft.mode === 'buildapp'" class="block">
+              <span class="mb-1 block text-sm font-medium text-gray-400">{{ t('accounts.buildAppUrl') }}</span>
+              <input
+                v-model.trim="draft.build_app_url"
+                class="w-full rounded border border-[#30363d] bg-[#0d1117] px-3 py-2 text-white transition focus:border-blue-500 focus:outline-none"
+                :placeholder="t('accounts.buildAppUrlPlaceholder')"
+              />
+              <span class="mt-1 block text-xs text-gray-500">{{ t('accounts.buildAppHint') }}</span>
+            </label>
           </div>
           <div class="mt-6 flex gap-2">
             <button

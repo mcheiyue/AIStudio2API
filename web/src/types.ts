@@ -16,6 +16,9 @@ export interface Account {
   models: string[]
   benefit_tier: string
   message: string
+  mode: string
+  build_app_url: string
+  build_app_worker?: string
 }
 
 export interface AccountDraft {
@@ -24,6 +27,8 @@ export interface AccountDraft {
   proxy: string
   locale: string
   timezone: string
+  mode: string
+  build_app_url: string
 }
 
 export interface AccountCounters {
