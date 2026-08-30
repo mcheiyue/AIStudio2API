@@ -160,6 +160,12 @@ func (admin *runtimeAdmin) CreateAccount(ctx context.Context, input api.AccountI
 	if timezone := strings.TrimSpace(input.Timezone); timezone != "" {
 		accountConfig.Timezone = timezone
 	}
+	if mode := strings.TrimSpace(input.Mode); mode != "" {
+		accountConfig.Mode = mode
+	}
+	if url := strings.TrimSpace(input.BuildAppURL); url != "" {
+		accountConfig.BuildAppURL = url
+	}
 	if err := accountConfig.Validate(); err != nil {
 		return api.AdminAccount{}, invalidAccount(err)
 	}
@@ -627,6 +633,7 @@ func adminAccountDTO(pool *aistudio.AccountPool, status aistudio.AccountStatus) 
 		Proxy: status.Proxy, Locale: status.Locale, Timezone: status.Timezone,
 		Models: models, BenefitTier: status.BenefitTier, Message: status.Message,
 		BuildAppWorker: pool.BuildAppWorkerState(status.ID),
+		Mode:           status.Mode, BuildAppURL: status.BuildAppURL,
 	}
 }
 

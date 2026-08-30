@@ -96,15 +96,19 @@ type AdminAccount struct {
 	Message     string   `json:"message"`
 	// BuildAppWorker 仅 mode=buildapp 账号有值：idle/warming/ready/error
 	BuildAppWorker string `json:"build_app_worker,omitempty"`
+	Mode           string `json:"mode,omitempty"`
+	BuildAppURL    string `json:"build_app_url,omitempty"`
 }
 
 // AccountInput 表示新增账户配置
 type AccountInput struct {
-	Label    string `json:"label"`
-	Enabled  bool   `json:"enabled"`
-	Proxy    string `json:"proxy"`
-	Locale   string `json:"locale"`
-	Timezone string `json:"timezone"`
+	Label       string `json:"label"`
+	Enabled     bool   `json:"enabled"`
+	Proxy       string `json:"proxy"`
+	Locale      string `json:"locale"`
+	Timezone    string `json:"timezone"`
+	Mode        string `json:"mode"`                     // playground | buildapp，空值归一到 playground
+	BuildAppURL string `json:"build_app_url,omitempty"` // Mode=buildapp 时的 applet 地址
 }
 
 // RuntimeConfig 表示全局运行配置

@@ -176,6 +176,8 @@ type AccountStatus struct {
 	Proxy       string                   `json:"proxy"`
 	Locale      string                   `json:"locale"`
 	Timezone    string                   `json:"timezone"`
+	Mode        string                   `json:"mode,omitempty"`
+	BuildAppURL string                   `json:"build_app_url,omitempty"`
 	Models      []string                 `json:"models"`
 	BenefitTier string                   `json:"benefit_tier"`
 	Cooldowns   map[string]CooldownState `json:"-"`
@@ -2095,6 +2097,8 @@ func (p *AccountPool) Status() []AccountStatus {
 			Proxy:       account.Config.Proxy,
 			Locale:      account.Config.Locale,
 			Timezone:    account.Config.Timezone,
+			Mode:        account.Config.Mode,
+			BuildAppURL: account.Config.BuildAppURL,
 			Models:      models,
 			BenefitTier: account.BenefitTier.String(),
 			Cooldowns:   cloneCooldowns(account.runtime.Cooldowns),
