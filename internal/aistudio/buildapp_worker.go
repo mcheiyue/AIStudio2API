@@ -6,11 +6,22 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/buildapp"
 	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 )
+
+// buildAppHeadless 返回 Camoufox 是否无头启动。默认 true（适配服务器部署）；
+// 本地 GUI 调试可设 BUILDAPP_HEADLESS=false 观感浏览器行为。
+func buildAppHeadless() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("BUILDAPP_HEADLESS")))
+	if v == "false" || v == "0" {
+		return false
+	}
+	return true
+}
 
 // BuildAppWorker 持有单个 buildapp 模式账号的 WS 中继 + applet 浏览器会话。
 // 本质是把账号的原始 HTTP 请求经 applet 中继到 generativelanguage（反向代理）。
@@ -41,7 +52,7 @@ func NewBuildAppWorker(storageState, camoufoxPath, appletURL, addr string) (*Bui
 		StorageStatePath: storageState,
 		Locale:           "en-US",
 		Timezone:         "America/New_York",
-		Headless:         false,
+		Headless:         buildAppHeadless(),
 		Log:              os.Stderr,
 		// Camoufox 是独立进程，不会自动继承 GUI 浏览器的链式 HY2 代理；
 		// 不设则直连 Google 被重置（NS_ERROR_NET_RESET / 300s 无回包）。
