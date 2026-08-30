@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -159,6 +160,7 @@ func (s *server) registerAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/accounts/{id}/verify", s.handleVerifyAccount)
 	mux.HandleFunc("POST /api/control/start", s.handleStartService)
 	mux.HandleFunc("POST /api/control/stop", s.handleStopService)
+	mux.HandleFunc("POST /api/service/reload", s.handleReloadService)
 	mux.HandleFunc("DELETE /api/logs", s.handleClearLogs)
 	mux.HandleFunc("GET /api/config", s.handleRuntimeConfig)
 	mux.HandleFunc("PUT /api/config", s.handleUpdateRuntimeConfig)
@@ -272,6 +274,20 @@ func (s *server) handleStartService(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleStopService(w http.ResponseWriter, r *http.Request) {
 	status, err := s.config.Admin.StopService(r.Context())
+	if err != nil {
+		writeAdminUpstreamError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// handleReloadService 先停后起当前生成服务：buildRuntimeGeneration 会重新
+// store.Load() 重读 auth/ 下账号，免重启进程即可让新增/修改的 account.json 生效。
+func (s *server) handleReloadService(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.config.Admin.StopService(r.Context()); err != nil {
+		log.Printf("[admin] reload: stop returned %v (ignored)", err)
+	}
+	status, err := s.config.Admin.StartService(r.Context())
 	if err != nil {
 		writeAdminUpstreamError(w, err)
 		return
