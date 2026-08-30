@@ -2,14 +2,13 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
@@ -51,25 +50,48 @@ type geminiPart struct {
 		Name     string          `json:"name"`
 		Response json.RawMessage `json:"response"`
 	} `json:"functionResponse"`
+	ExecutableCode *struct {
+		Language string `json:"language"`
+		Code     string `json:"code"`
+	} `json:"executableCode"`
+	CodeExecutionResult *struct {
+		Outcome string `json:"outcome"`
+		Output  string `json:"output"`
+		Error   string `json:"error"`
+	} `json:"codeExecutionResult"`
 }
 
 type geminiGenerationConfig struct {
-	Temperature        *float64            `json:"temperature"`
-	TopP               *float64            `json:"topP"`
-	TopK               *int                `json:"topK"`
-	MaxOutputTokens    *int64              `json:"maxOutputTokens"`
-	StopSequences      []string            `json:"stopSequences"`
-	ResponseMIMEType   string              `json:"responseMimeType"`
-	ResponseSchema     json.RawMessage     `json:"responseSchema"`
-	ResponseJSONSchema json.RawMessage     `json:"responseJsonSchema"`
-	ResponseModalities []string            `json:"responseModalities"`
-	ImageConfig        *geminiImageConfig  `json:"imageConfig"`
-	SpeechConfig       *geminiSpeechConfig `json:"speechConfig"`
-	Seed               *int64              `json:"seed"`
-	ThinkingConfig     *struct {
+	Temperature         *float64                   `json:"temperature"`
+	TopP                *float64                   `json:"topP"`
+	TopK                *int                       `json:"topK"`
+	FrequencyPenalty    *float64                   `json:"frequencyPenalty"`
+	PresencePenalty     *float64                   `json:"presencePenalty"`
+	CandidateCount      *int64                     `json:"candidateCount"`
+	ResponseLogprobs    *bool                      `json:"responseLogprobs"`
+	Logprobs            *int64                     `json:"logprobs"`
+	MaxOutputTokens     *int64                     `json:"maxOutputTokens"`
+	StopSequences       []string                   `json:"stopSequences"`
+	ResponseMIMEType    string                     `json:"responseMimeType"`
+	ResponseSchema      json.RawMessage            `json:"responseSchema"`
+	ResponseJSONSchema  json.RawMessage            `json:"responseJsonSchema"`
+	ResponseModalities  []string                   `json:"responseModalities"`
+	ImageConfig         *geminiImageConfig         `json:"imageConfig"`
+	SpeechConfig        *geminiSpeechConfig        `json:"speechConfig"`
+	TranscriptionConfig *geminiTranscriptionConfig `json:"transcriptionConfig"`
+	Seed                *int64                     `json:"seed"`
+	ThinkingConfig      *struct {
 		ThinkingBudget *int64 `json:"thinkingBudget"`
 		ThinkingLevel  string `json:"thinkingLevel"`
 	} `json:"thinkingConfig"`
+}
+
+type geminiTranscriptionConfig struct {
+	LanguageCodes      []string `json:"languageCodes"`
+	CustomVocabulary   []string `json:"customVocabulary"`
+	WordTimestamps     *bool    `json:"wordTimestamps"`
+	SpeakerLabels      *bool    `json:"speakerLabels"`
+	SmartTranscription bool     `json:"smartTranscription"`
 }
 
 type geminiImageConfig struct {
@@ -120,10 +142,11 @@ type geminiToolConfig struct {
 func (s *server) handleGeminiModels(w http.ResponseWriter, r *http.Request) {
 	models, err := s.service.Models(r.Context())
 	if err != nil {
-		writeGeminiError(w, statusFromError(err), geminiErrorStatus(err), err.Error())
+		if shouldWriteRequestError(r, err) {
+			writeGeminiError(w, statusFromError(err), geminiErrorStatus(err), err.Error())
+		}
 		return
 	}
-	models = publicModels(models)
 	data := make([]map[string]any, 0, len(models))
 	for _, model := range models {
 		data = append(data, geminiModelObject(model))
@@ -135,10 +158,12 @@ func (s *server) handleGeminiModel(w http.ResponseWriter, r *http.Request) {
 	modelID := strings.TrimPrefix(r.PathValue("model"), "models/")
 	models, err := s.service.Models(r.Context())
 	if err != nil {
-		writeGeminiError(w, statusFromError(err), geminiErrorStatus(err), err.Error())
+		if shouldWriteRequestError(r, err) {
+			writeGeminiError(w, statusFromError(err), geminiErrorStatus(err), err.Error())
+		}
 		return
 	}
-	for _, model := range publicModels(models) {
+	for _, model := range models {
 		if model.ID == modelID {
 			writeJSON(w, http.StatusOK, geminiModelObject(model))
 			return
@@ -148,7 +173,7 @@ func (s *server) handleGeminiModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func geminiModelObject(model aistudio.Model) map[string]any {
-	return map[string]any{
+	item := map[string]any{
 		"name":                       "models/" + model.ID,
 		"displayName":                model.Name,
 		"description":                model.Description,
@@ -156,6 +181,19 @@ func geminiModelObject(model aistudio.Model) map[string]any {
 		"inputTokenLimit":            model.InputTokenLimit,
 		"outputTokenLimit":           model.OutputTokenLimit,
 	}
+	if len(model.Capabilities) > 0 {
+		item["capabilities"] = model.Capabilities
+	}
+	if len(model.CapabilityOptions) > 0 {
+		item["capabilityOptions"] = model.CapabilityOptions
+	}
+	if len(model.AccessModes) > 0 {
+		item["accessModes"] = model.AccessModes
+	}
+	if model.Paid {
+		item["paid"] = true
+	}
+	return item
 }
 
 func (s *server) handleGeminiAction(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +236,9 @@ func (s *server) handleGeminiAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (request geminiRequest) toGenerateRequest(id string, model string) (aistudio.GenerateRequest, error) {
+	if err := request.GenerationConfig.validate(); err != nil {
+		return aistudio.GenerateRequest{}, err
+	}
 	var system string
 	if request.SystemInstruction != nil {
 		parts, _, err := mapGeminiParts(request.SystemInstruction.Parts)
@@ -256,6 +297,10 @@ func (request geminiRequest) toGenerateRequest(id string, model string) (aistudi
 	if err != nil {
 		return aistudio.GenerateRequest{}, err
 	}
+	config.TranscriptionConfig, err = mapGeminiTranscriptionConfig(request.GenerationConfig.TranscriptionConfig)
+	if err != nil {
+		return aistudio.GenerateRequest{}, err
+	}
 	if len(request.GenerationConfig.ResponseJSONSchema) > 0 {
 		config.ResponseSchema = request.GenerationConfig.ResponseJSONSchema
 	}
@@ -267,6 +312,59 @@ func (request geminiRequest) toGenerateRequest(id string, model string) (aistudi
 		ID: id, Model: model, System: system, Contents: contents, Config: config, Tools: tools,
 		AccountID: strings.TrimSpace(request.AccountID),
 	}, nil
+}
+
+func (config geminiGenerationConfig) validate() error {
+	if config.FrequencyPenalty != nil && *config.FrequencyPenalty != 0 {
+		return fmt.Errorf("generationConfig.frequencyPenalty must be 0")
+	}
+	if config.PresencePenalty != nil && *config.PresencePenalty != 0 {
+		return fmt.Errorf("generationConfig.presencePenalty must be 0")
+	}
+	if config.CandidateCount != nil && *config.CandidateCount != 1 {
+		return fmt.Errorf("generationConfig.candidateCount must be 1")
+	}
+	if config.ResponseLogprobs != nil && *config.ResponseLogprobs {
+		return fmt.Errorf("generationConfig.responseLogprobs must be false")
+	}
+	if config.Logprobs != nil && *config.Logprobs != 0 {
+		return fmt.Errorf("generationConfig.logprobs must be 0")
+	}
+	return nil
+}
+
+func mapGeminiTranscriptionConfig(input *geminiTranscriptionConfig) (*aistudio.TranscriptionConfig, error) {
+	if input == nil {
+		return nil, nil
+	}
+	config := &aistudio.TranscriptionConfig{
+		SmartTranscription: input.SmartTranscription,
+	}
+	if input.WordTimestamps != nil {
+		config.WordTimestamps = *input.WordTimestamps
+	}
+	if input.SpeakerLabels != nil {
+		config.SpeakerLabels = *input.SpeakerLabels
+	}
+	for _, vocabulary := range input.CustomVocabulary {
+		if vocabulary = strings.TrimSpace(vocabulary); vocabulary != "" {
+			config.CustomVocabulary = append(config.CustomVocabulary, vocabulary)
+		}
+	}
+	for _, language := range input.LanguageCodes {
+		language = strings.TrimSpace(language)
+		if language != "" && !strings.EqualFold(language, "detect") {
+			config.LanguageCodes = append(config.LanguageCodes, language)
+		}
+	}
+	if config.SmartTranscription {
+		if input.WordTimestamps != nil && *input.WordTimestamps || input.SpeakerLabels != nil && *input.SpeakerLabels {
+			return nil, fmt.Errorf("transcriptionConfig.smartTranscription cannot be combined with wordTimestamps or speakerLabels")
+		}
+		config.WordTimestamps = false
+		config.SpeakerLabels = false
+	}
+	return config, nil
 }
 
 func mapGeminiResponseModalities(input []string) ([]aistudio.ResponseModality, error) {
@@ -346,6 +444,12 @@ func mapGeminiParts(input []geminiPart) ([]aistudio.Part, bool, error) {
 		if part.FunctionResponse != nil {
 			variants++
 		}
+		if part.ExecutableCode != nil {
+			variants++
+		}
+		if part.CodeExecutionResult != nil {
+			variants++
+		}
 		if variants == 0 && part.ThoughtSignature != "" {
 			parts = append(parts, aistudio.Part{ThoughtSignature: part.ThoughtSignature})
 			continue
@@ -409,6 +513,22 @@ func mapGeminiParts(input []geminiPart) ([]aistudio.Part, bool, error) {
 				ThoughtSignature: part.ThoughtSignature,
 			})
 			hasResult = true
+		case part.ExecutableCode != nil:
+			parts = append(parts, aistudio.Part{
+				ExecutableCode: &aistudio.ExecutableCode{
+					Language: part.ExecutableCode.Language, Code: part.ExecutableCode.Code,
+				},
+				ThoughtSignature: part.ThoughtSignature,
+			})
+		case part.CodeExecutionResult != nil:
+			parts = append(parts, aistudio.Part{
+				CodeExecutionResult: &aistudio.CodeExecutionResult{
+					Outcome: part.CodeExecutionResult.Outcome,
+					Output:  part.CodeExecutionResult.Output,
+					Error:   part.CodeExecutionResult.Error,
+				},
+				ThoughtSignature: part.ThoughtSignature,
+			})
 		default:
 			if part.Thought {
 				if part.ThoughtSignature != "" {
@@ -433,6 +553,58 @@ func geminiJSONObject(raw json.RawMessage, field string) (json.RawMessage, error
 	return raw, nil
 }
 
+func mapGeminiGoogleSearch(raw json.RawMessage) (*aistudio.GoogleSearchOptions, error) {
+	if !geminiRawObjectPresent(raw) {
+		return nil, nil
+	}
+	var config struct {
+		SearchTypes *struct {
+			WebSearch   json.RawMessage `json:"webSearch"`
+			ImageSearch json.RawMessage `json:"imageSearch"`
+		} `json:"searchTypes"`
+		TimeRangeFilter *struct {
+			StartTime string `json:"startTime"`
+			EndTime   string `json:"endTime"`
+		} `json:"timeRangeFilter"`
+	}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return nil, fmt.Errorf("googleSearch must be an object")
+	}
+	options := &aistudio.GoogleSearchOptions{}
+	if config.SearchTypes == nil {
+		options.WebSearch = true
+	} else {
+		options.WebSearch = geminiRawObjectPresent(config.SearchTypes.WebSearch)
+		options.ImageSearch = geminiRawObjectPresent(config.SearchTypes.ImageSearch)
+		if !options.WebSearch && !options.ImageSearch {
+			options.WebSearch = true
+		}
+	}
+	if config.TimeRangeFilter != nil {
+		timeRange := &aistudio.GoogleSearchTimeRange{}
+		if config.TimeRangeFilter.StartTime != "" {
+			value, err := time.Parse(time.RFC3339Nano, config.TimeRangeFilter.StartTime)
+			if err != nil {
+				return nil, fmt.Errorf("googleSearch.timeRangeFilter.startTime: %w", err)
+			}
+			timeRange.StartTime = value
+		}
+		if config.TimeRangeFilter.EndTime != "" {
+			value, err := time.Parse(time.RFC3339Nano, config.TimeRangeFilter.EndTime)
+			if err != nil {
+				return nil, fmt.Errorf("googleSearch.timeRangeFilter.endTime: %w", err)
+			}
+			timeRange.EndTime = value
+		}
+		options.TimeRange = timeRange
+	}
+	return options, nil
+}
+
+func geminiRawObjectPresent(raw json.RawMessage) bool {
+	return len(raw) > 0 && strings.TrimSpace(string(raw)) != "null"
+}
+
 func mapGeminiTools(groups []geminiToolGroup, config geminiToolConfig) (aistudio.Tools, error) {
 	var mapped aistudio.Tools
 	for _, group := range groups {
@@ -451,19 +623,38 @@ func mapGeminiTools(groups []geminiToolGroup, config geminiToolConfig) (aistudio
 				Name: declaration.Name, Description: declaration.Description, Parameters: parameters,
 			})
 		}
-		if len(group.GoogleSearch) > 0 || len(group.GoogleSearchRetrieval) > 0 {
+		search, err := mapGeminiGoogleSearch(group.GoogleSearch)
+		if err != nil {
+			return aistudio.Tools{}, err
+		}
+		if search != nil {
+			if mapped.GoogleSearch == nil {
+				mapped.GoogleSearch = search
+			} else {
+				mapped.GoogleSearch.WebSearch = mapped.GoogleSearch.WebSearch || search.WebSearch
+				mapped.GoogleSearch.ImageSearch = mapped.GoogleSearch.ImageSearch || search.ImageSearch
+				if search.TimeRange != nil {
+					mapped.GoogleSearch.TimeRange = search.TimeRange
+				}
+			}
+		}
+		retrieval, err := geminiEmptyObjectPresent(group.GoogleSearchRetrieval, "googleSearchRetrieval")
+		if err != nil {
+			return aistudio.Tools{}, err
+		}
+		if retrieval {
 			mapped.Google = appendUnique(mapped.Google, "google_search")
 		}
-		if len(group.URLContext) > 0 {
+		if geminiRawObjectPresent(group.URLContext) {
 			mapped.Google = appendUnique(mapped.Google, "url_context")
 		}
-		if len(group.CodeExecution) > 0 {
+		if geminiRawObjectPresent(group.CodeExecution) {
 			mapped.Google = appendUnique(mapped.Google, "code_execution")
 		}
-		if len(group.GoogleMaps) > 0 {
+		if geminiRawObjectPresent(group.GoogleMaps) {
 			mapped.Google = appendUnique(mapped.Google, "google_maps")
 		}
-		if len(group.ImageSearch) > 0 {
+		if geminiRawObjectPresent(group.ImageSearch) {
 			mapped.Google = appendUnique(mapped.Google, "image_search")
 		}
 	}
@@ -481,11 +672,25 @@ func mapGeminiTools(groups []geminiToolGroup, config geminiToolConfig) (aistudio
 	default:
 		return aistudio.Tools{}, fmt.Errorf("unsupported functionCallingConfig mode %q", config.FunctionCallingConfig.Mode)
 	}
-	if len(mapped.Functions) == 0 && len(mapped.Google) == 0 {
+	if len(mapped.Functions) == 0 && len(mapped.Google) == 0 && mapped.GoogleSearch == nil {
 		return mapped, nil
 	}
 	mapped.ToolConfig = toolConfig
 	return mapped, nil
+}
+
+func geminiEmptyObjectPresent(raw json.RawMessage, field string) (bool, error) {
+	if !geminiRawObjectPresent(raw) {
+		return false, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return false, fmt.Errorf("%s must be an object", field)
+	}
+	if len(object) != 0 {
+		return false, fmt.Errorf("%s only accepts an empty object", field)
+	}
+	return true, nil
 }
 
 func (s *server) handleGeminiCountTokens(w http.ResponseWriter, r *http.Request, request aistudio.GenerateRequest) {
@@ -493,7 +698,7 @@ func (s *server) handleGeminiCountTokens(w http.ResponseWriter, r *http.Request,
 		Model: request.Model, System: request.System, Contents: request.Contents, Tools: request.Tools,
 	})
 	if err != nil {
-		if !errors.Is(err, context.Canceled) {
+		if shouldWriteRequestError(r, err) {
 			writeGeminiError(w, statusFromError(err), geminiErrorStatus(err), err.Error())
 		}
 		return
@@ -502,13 +707,11 @@ func (s *server) handleGeminiCountTokens(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, request aistudio.GenerateRequest, stream bool) {
-	// Build App 中继路径：账号 mode=buildapp 时，原始 Gemini 请求经 applet 反代到 generativelanguage，
-	// 不走 WAA 私有 RPC。request 已被解析消费，这里重建请求体再转发。
+	// Build App 中继：账号 mode=buildapp 时把原始 Gemini 请求转给 applet 代理访问 generativelanguage，
+	// 绕过 WAA 私有 RPC。request 已被解析消费，这里重建原始请求体转发。
 	if request.AccountID != "" && s.service.AccountMode(request.AccountID) == aistudio.AccountModeBuildApp {
-		targetAccount := request.AccountID // 路由用的账号 ID，不得进入发给 Google 的请求体
-		// 只转发 applet 能识别的极简 body（contents + systemInstruction），
-		// 与本地 e2e 探针一致；完整 GenerateRequest 的 id/model/config/tools 字段会让
-		// applet 的 proxy browser 卡死（Google 300s 无回包）。
+		targetAccount := request.AccountID // 锁定目标账号 ID，避免把 AccountID 带进发往 Google 的 body
+		// 只转发 applet 识别的极简 body：contents + systemInstruction（完整 GenerateRequest 会让 proxy browser 卡 300s）
 		forward := map[string]any{"contents": request.Contents}
 		if request.System != "" {
 			forward["systemInstruction"] = map[string]any{"parts": []map[string]any{{"text": request.System}}}
@@ -529,7 +732,7 @@ func (s *server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, re
 	}
 	events, err := s.service.Generate(r.Context(), request)
 	if err != nil {
-		if !errors.Is(err, context.Canceled) {
+		if shouldWriteRequestError(r, err) {
 			writeGeminiError(w, statusFromError(err), geminiErrorStatus(err), err.Error())
 		}
 		return
@@ -540,7 +743,7 @@ func (s *server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, re
 	}
 	result, err := consumeEvents(r.Context(), events, nil)
 	if err != nil {
-		if !errors.Is(err, context.Canceled) {
+		if shouldWriteRequestError(r, err) {
 			writeGeminiError(w, statusFromError(err), geminiErrorStatus(err), err.Error())
 		}
 		return
@@ -550,10 +753,10 @@ func (s *server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, re
 
 func buildGeminiResponse(request aistudio.GenerateRequest, result generationResult) map[string]any {
 	candidate := map[string]any{
-		"content":      map[string]any{"role": "model", "parts": geminiOutputParts(result)},
-		"finishReason": geminiFinishReason(result.finishReason),
-		"index":        0,
+		"content": map[string]any{"role": "model", "parts": geminiOutputParts(result)},
+		"index":   0,
 	}
+	setGeminiFinish(candidate, result.finishReason)
 	if result.grounding != nil {
 		candidate["groundingMetadata"] = geminiGroundingMetadata(*result.grounding)
 	} else if len(result.citations) > 0 {
@@ -578,7 +781,7 @@ func geminiOutputParts(result generationResult) []map[string]any {
 	for _, event := range result.events {
 		switch event.Kind {
 		case aistudio.EventText:
-			parts = append(parts, geminiSignedPart(map[string]any{"text": event.Text}, event.ThoughtSignature))
+			parts = append(parts, geminiSignedPart(geminiTextPart(event), event.ThoughtSignature))
 		case aistudio.EventReasoning:
 			parts = append(parts, geminiSignedPart(map[string]any{"text": event.Text, "thought": true}, event.ThoughtSignature))
 		case aistudio.EventToolCall:
@@ -593,9 +796,9 @@ func geminiOutputParts(result generationResult) []map[string]any {
 			}
 		case aistudio.EventCodeExecutionResult:
 			if event.CodeExecutionResult != nil {
-				parts = append(parts, geminiSignedPart(map[string]any{"codeExecutionResult": map[string]any{
-					"outcome": event.CodeExecutionResult.Outcome, "output": event.CodeExecutionResult.Output,
-				}}, event.ThoughtSignature))
+				parts = append(parts, geminiSignedPart(map[string]any{
+					"codeExecutionResult": geminiCodeExecutionResult(*event.CodeExecutionResult),
+				}, event.ThoughtSignature))
 			}
 		case aistudio.EventMedia:
 			if event.Media != nil {
@@ -618,6 +821,33 @@ func geminiOutputParts(result generationResult) []map[string]any {
 	return parts
 }
 
+func geminiTextPart(event aistudio.Event) map[string]any {
+	part := map[string]any{"text": event.Text}
+	if event.Transcript == nil {
+		return part
+	}
+	metadata := map[string]any{}
+	if event.Transcript.Speaker != "" {
+		metadata["speaker"] = event.Transcript.Speaker
+	}
+	if len(event.Transcript.Timestamps) > 0 {
+		timestamps := make([]map[string]any, 0, len(event.Transcript.Timestamps))
+		for _, timestamp := range event.Transcript.Timestamps {
+			timestamps = append(timestamps, map[string]any{
+				"start": geminiTranscriptDuration(timestamp.Start),
+				"end":   geminiTranscriptDuration(timestamp.End),
+			})
+		}
+		metadata["timestamps"] = timestamps
+	}
+	part["transcriptionMetadata"] = metadata
+	return part
+}
+
+func geminiTranscriptDuration(duration aistudio.TranscriptDuration) map[string]int64 {
+	return map[string]int64{"seconds": duration.Seconds, "nanos": duration.Nanos}
+}
+
 func geminiFunctionCallPart(call aistudio.FunctionCall) map[string]any {
 	part := map[string]any{"functionCall": map[string]any{
 		"id": call.ID, "name": call.Name, "args": call.Arguments,
@@ -633,6 +863,16 @@ func geminiSignedPart(part map[string]any, signature string) map[string]any {
 		part["thoughtSignature"] = signature
 	}
 	return part
+}
+
+func geminiCodeExecutionResult(result aistudio.CodeExecutionResult) map[string]any {
+	output := map[string]any{"outcome": result.Outcome}
+	if result.Outcome == "OUTCOME_OK" {
+		output["output"] = result.Output
+	} else {
+		output["error"] = result.Error
+	}
+	return output
 }
 
 func geminiCitationMetadata(citations []aistudio.Citation) map[string]any {
@@ -708,6 +948,8 @@ func geminiGroundingMetadata(metadata aistudio.GroundingMetadata) map[string]any
 
 func geminiFinishReason(reason string) string {
 	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "", "stop", "stop_sequence":
+		return "STOP"
 	case "unspecified":
 		return "FINISH_REASON_UNSPECIFIED"
 	case "max_tokens", "max_output_tokens", "length":
@@ -742,8 +984,20 @@ func geminiFinishReason(reason string) string {
 		return "NO_IMAGE"
 	case "image_recitation":
 		return "IMAGE_RECITATION"
+	case "missing_thought_signature":
+		return "OTHER"
 	default:
-		return "STOP"
+		return "OTHER"
+	}
+}
+
+func setGeminiFinish(candidate map[string]any, reason string) {
+	candidate["finishReason"] = geminiFinishReason(reason)
+	normalized := strings.ToLower(strings.TrimSpace(reason))
+	if normalized == "missing_thought_signature" {
+		candidate["finishMessage"] = "Missing thought signature"
+	} else if strings.HasPrefix(normalized, "provider_") {
+		candidate["finishMessage"] = "AI Studio finish reason " + strings.TrimPrefix(normalized, "provider_")
 	}
 }
 
@@ -763,7 +1017,7 @@ func (s *server) streamGemini(w http.ResponseWriter, r *http.Request, request ai
 		response := map[string]any{"responseId": request.ID, "modelVersion": request.Model}
 		switch event.Kind {
 		case aistudio.EventText:
-			response["candidates"] = []any{geminiStreamCandidate(geminiSignedPart(map[string]any{"text": event.Text}, event.ThoughtSignature))}
+			response["candidates"] = []any{geminiStreamCandidate(geminiSignedPart(geminiTextPart(event), event.ThoughtSignature))}
 		case aistudio.EventReasoning:
 			response["candidates"] = []any{geminiStreamCandidate(geminiSignedPart(map[string]any{"text": event.Text, "thought": true}, event.ThoughtSignature))}
 		case aistudio.EventToolCall:
@@ -783,9 +1037,9 @@ func (s *server) streamGemini(w http.ResponseWriter, r *http.Request, request ai
 			if event.CodeExecutionResult == nil {
 				return nil
 			}
-			part := map[string]any{"codeExecutionResult": map[string]any{
-				"outcome": event.CodeExecutionResult.Outcome, "output": event.CodeExecutionResult.Output,
-			}}
+			part := map[string]any{
+				"codeExecutionResult": geminiCodeExecutionResult(*event.CodeExecutionResult),
+			}
 			response["candidates"] = []any{geminiStreamCandidate(geminiSignedPart(part, event.ThoughtSignature))}
 		case aistudio.EventGrounding:
 			if event.Grounding == nil {
@@ -829,7 +1083,7 @@ func (s *server) streamGemini(w http.ResponseWriter, r *http.Request, request ai
 		return writeSSE(w, "", response)
 	}, func() error { return writeSSEHeartbeat(w) })
 	if err != nil {
-		if !errors.Is(err, context.Canceled) {
+		if shouldWriteRequestError(r, err) {
 			_ = writeSSE(w, "", map[string]any{"error": map[string]any{
 				"code": statusFromError(err), "message": err.Error(), "status": geminiErrorStatus(err),
 			}})
@@ -840,9 +1094,11 @@ func (s *server) streamGemini(w http.ResponseWriter, r *http.Request, request ai
 	if result.providerModel != "" {
 		model = result.providerModel
 	}
+	candidate := map[string]any{"index": 0}
+	setGeminiFinish(candidate, result.finishReason)
 	final := map[string]any{
 		"responseId": request.ID, "modelVersion": model,
-		"candidates": []any{map[string]any{"index": 0, "finishReason": geminiFinishReason(result.finishReason)}},
+		"candidates": []any{candidate},
 	}
 	if result.usage != nil {
 		final["usageMetadata"] = geminiUsage(result.usage)
