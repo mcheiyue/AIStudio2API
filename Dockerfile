@@ -20,7 +20,7 @@ COPY --from=web /src/internal/webui/dist ./internal/webui/dist
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags="-s -w" -o /out/aistudio2api ./cmd/aistudio2api
 
-# ---------- Stage 3: 运行时（含 Camoufox/Firefox 依赖） ----------
+# ---------- Stage 3: 运行时（含 Camoufox/Firefox 依赖 + Xvfb/xdotool） ----------
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -30,12 +30,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
         libcups2 libdrm2 libgbm1 libxcursor1 libxi6 \
         fonts-liberation procps \
+        xvfb xdotool \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=build /out/aistudio2api ./aistudio2api
+COPY docker/entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 # 登录态与 Camoufox 运行时（首次运行自动下载）均落卷持久化
 VOLUME ["/app/auth", "/app/runtime"]
 EXPOSE 2048
-ENTRYPOINT ["./aistudio2api"]
+ENTRYPOINT ["./entrypoint.sh"]

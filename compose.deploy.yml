@@ -9,13 +9,15 @@ services:
     network_mode: host
     environment:
       PROXY: socks5://127.0.0.1:1080
-      # Build App 的 Camoufox 需经本机 HY2 出口（与 PROXY 同源），且服务器无头运行
+      # Build App 的 Camoufox 需经本机 HY2 出口（与 PROXY 同源）
       BUILDAPP_PROXY: socks5://127.0.0.1:1080
-      BUILDAPP_HEADLESS: "true"
+      # Build App 必须有头（OS 真实点击放行 bootstrapChannel）；容器入口已起 Xvfb :99
+      BUILDAPP_HEADLESS: "false"
       # AISTUDIO_AUTH_STATES: auth        # 默认即此
       # LISTEN_ADDR: 127.0.0.1:2048       # 默认即此
       WARM_WORKER_LIMIT: "0"               # 按需实例化（1.8G 内存红线），需要预热再调
     volumes:
       - ./auth:/app/auth
       - ./runtime:/app/runtime
-    mem_limit: 900m
+    # 有头 Camoufox 树 ~855MB + Xvfb + Go 本体；双端互斥保证同账号只留一棵浏览器树
+    mem_limit: 1200m
