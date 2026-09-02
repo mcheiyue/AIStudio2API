@@ -14,14 +14,16 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 )
 
-// buildAppHeadless 返回 Camoufox 是否无头启动。默认 true（适配服务器部署）；
-// 本地 GUI 调试可设 BUILDAPP_HEADLESS=false 观感浏览器行为。
+// buildAppHeadless 返回 Camoufox 是否无头启动。默认 false（有头）：
+// Build App 需要 OS 级真实鼠标点击建立 user activation 才能放行 bootstrapChannel，
+// 无头窗口无法接收真实输入（BiDi 合成点击已证 403）。
+// Linux 服务器用 Xvfb 提供虚拟屏（DISPLAY=:99）；仅调试时可设 BUILDAPP_HEADLESS=true。
 func buildAppHeadless() bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("BUILDAPP_HEADLESS")))
-	if v == "false" || v == "0" {
-		return false
+	if v == "true" || v == "1" {
+		return true
 	}
-	return true
+	return false
 }
 
 // BuildAppWorker 持有单个 buildapp 模式账号的 WS 中继 + applet 浏览器会话。
@@ -29,6 +31,7 @@ func buildAppHeadless() bool {
 type BuildAppWorker struct {
 	server    *buildapp.Server
 	transport *buildapp.Transport
+	session   *buildapp.Session
 	state     atomic.Value // 存 string：idle/warming/ready/error，由 NewBuildAppWorker 设置
 }
 
@@ -65,12 +68,14 @@ func NewBuildAppWorker(storageState, camoufoxPath, appletURL, addr string) (*Bui
 		// applet 连本机 WS 中继（ws://127.0.0.1:9998）必须绕过代理，否则会被塞进 Clash 而连不上。
 		ProxyBypass: "127.0.0.1,localhost",
 	}
-	if _, err := buildapp.LaunchApplet(ctx, opts, srv, 0, appletURL); err != nil {
+	sess, err := buildapp.LaunchApplet(ctx, opts, srv, 0, appletURL)
+	if err != nil {
 		srv.Stop()
 		return nil, err
 	}
 	transport := buildapp.NewTransport(srv, 0, "")
 	w.transport = transport
+	w.session = sess
 	w.state.Store("ready")
 	return w, nil
 }
@@ -85,6 +90,7 @@ func (w *BuildAppWorker) State() string {
 }
 
 // ServeHTTP 把原始 HTTP 请求经 applet 中继到 generativelanguage。
+// 请求期持续用 OS 级真实鼠标点击 Launch!（放行 applet 的 bootstrapChannel）。
 func (w *BuildAppWorker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -96,11 +102,44 @@ func (w *BuildAppWorker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "submit: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+
+	// 请求期自动点击：applet 收到 proxy_request 后才会渲染 Launch! 覆盖层，
+	// 点击它才能放行 window.fetch（bootstrapChannel）。1s 一循环，最多 90s。
+	clickCtx, stopClick := context.WithCancel(context.Background())
+	clickDone := make(chan struct{})
+	go func() {
+		defer close(clickDone)
+		deadline := time.Now().Add(90 * time.Second)
+		for time.Now().Before(deadline) {
+			if w.session != nil {
+				if clicked, err := w.session.ClickLaunch(); err != nil {
+					log.Printf("[buildapp] auto-click Launch! err: %v", err)
+				} else if clicked {
+					log.Printf("[buildapp] auto-click Launch! OK（等待 applet 回包）")
+					return
+				}
+			}
+			select {
+			case <-clickCtx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+		}
+	}()
+
 	w.transport.PumpTo(rw, ch, reqID)
+	stopClick()
+	<-clickDone
 }
 
-// Close 关闭中继与浏览器会话。
+// Close 关闭中继与浏览器会话（释放 ~855MB Camoufox 进程树）。
 func (w *BuildAppWorker) Close() error {
 	w.server.Stop()
+	if w.session != nil {
+		if err := w.session.Close(); err != nil {
+			return err
+		}
+		w.session = nil
+	}
 	return nil
 }

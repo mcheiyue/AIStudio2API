@@ -726,6 +726,21 @@ func (p *AccountPool) BuildAppWorkerState(accountID string) string {
 	return w.State()
 }
 
+// CloseBuildAppWorker 关闭并移除账号的 Build App worker（释放 ~855MB 浏览器树）。
+// 不存在时返回 nil（幂等）。供双端互斥使用：playground worker 接管账号时释放 build 侧。
+func (p *AccountPool) CloseBuildAppWorker(accountID string) error {
+	p.buildappMu.Lock()
+	w, ok := p.buildappWorkers[accountID]
+	if ok {
+		delete(p.buildappWorkers, accountID)
+	}
+	p.buildappMu.Unlock()
+	if !ok {
+		return nil
+	}
+	return w.Close()
+}
+
 // Account 返回稳定 ID 对应的账户
 func (p *AccountPool) Account(accountID string) (*Account, error) {
 	if p == nil {

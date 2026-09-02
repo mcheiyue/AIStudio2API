@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"net/http"
 	"sort"
@@ -435,6 +436,28 @@ func (manager *accountWorkerManager) Remove(accountID string) error {
 	defer account.startupMu.Unlock()
 	account.mu.Lock()
 	defer account.mu.Unlock()
+	return closeAccountWorker(account)
+}
+
+// ForceEvictAccount 强制关闭账号的 Playground（WAA）worker 并释放浏览器进程，
+// 但保留账户注册（区别于 Remove）。供双端互斥使用：Build App 接管账号时释放 Playground 侧
+// 浏览器树（~815MB），避免 1C2G 上双树同时常驻。无 worker 时返回 nil（幂等）。
+func (manager *accountWorkerManager) ForceEvictAccount(accountID string) error {
+	manager.rebalanceMu.Lock()
+	manager.mu.Lock()
+	account := manager.accounts[accountID]
+	manager.mu.Unlock()
+	manager.rebalanceMu.Unlock()
+	if account == nil {
+		return nil
+	}
+	account.startupMu.Lock()
+	defer account.startupMu.Unlock()
+	account.mu.Lock()
+	defer account.mu.Unlock()
+	if account.worker == nil && account.cleanupWorker == nil && account.runtimeLease == nil && account.cleanupLease == nil {
+		return nil
+	}
 	return closeAccountWorker(account)
 }
 
@@ -971,6 +994,8 @@ func (manager *accountWorkerManager) ensureWorker(
 		}
 		if ready {
 			manager.rebalanceMu.Unlock()
+			// 双端互斥：Playground 接管账号时释放 Build App 侧浏览器树（~855MB）。
+			_ = manager.pool.CloseBuildAppWorker(accountID)
 			return preparer, nil
 		}
 		occupancy := manager.occupiedWorkers()
@@ -1004,6 +1029,10 @@ func (manager *accountWorkerManager) ensureWorker(
 				manager.requests.log("service", "INFO", fmt.Sprintf(
 					"WAA Worker 按需扩容 | Worker=%d/%d", warmCount, manager.maxActive,
 				))
+			}
+			if err == nil {
+				// 双端互斥：Playground 新建 worker 接管账号时释放 Build App 侧浏览器树。
+				_ = manager.pool.CloseBuildAppWorker(accountID)
 			}
 			return preparer, err
 		}
@@ -1571,6 +1600,11 @@ func (service *trackedService) AccountMode(accountID string) string {
 
 // ServeBuildApp 委派的 Service 接口方法（Build App 中继，转给账号的 applet worker 访问 generativelanguage）
 func (service *trackedService) ServeBuildApp(ctx context.Context, rw http.ResponseWriter, r *http.Request, accountID string) error {
+	// 双端互斥：Build App 接管账号前，释放 Playground（WAA）浏览器树（~815MB），
+	// 避免 1C2G 上双树同时常驻。幂等，无 play worker 时直接放行。
+	if evictErr := service.workers.ForceEvictAccount(accountID); evictErr != nil {
+		log.Printf("[buildapp] evict playground worker for %s: %v", accountID, evictErr)
+	}
 	return service.service.ServeBuildApp(ctx, rw, r, accountID)
 }
 
