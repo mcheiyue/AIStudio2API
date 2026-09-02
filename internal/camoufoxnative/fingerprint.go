@@ -125,8 +125,8 @@ func buildCamoufoxConfig(ffVersion int, locale string, timezone string) (map[str
 		"screen.pageYOffset":            screen.PageYOffset,
 		"window.outerHeight":            nonNegative(screen.OuterHeight),
 		"window.outerWidth":             nonNegative(screen.OuterWidth),
-		"window.innerHeight":            nonNegative(screen.InnerHeight),
-		"window.innerWidth":             nonNegative(screen.InnerWidth),
+		"window.innerHeight":            viewportExtent(screen.InnerHeight, screen.OuterHeight, chromeHeight),
+		"window.innerWidth":             viewportExtent(screen.InnerWidth, screen.OuterWidth, 0),
 		"window.screenX":                screen.ScreenX,
 		"window.screenY":                screenY(screen),
 		"window.history.length":         randomInt(5) + 1,
@@ -205,6 +205,9 @@ func loadAccountCamoufoxConfig(storageStatePath string, ffVersion int, locale st
 		applyLocaleTimezone(saved.Config, locale, timezone)
 		saved.Locale = locale
 		saved.Timezone = timezone
+		changed = true
+	}
+	if repairViewportConfig(saved.Config) {
 		changed = true
 	}
 	if changed {
@@ -297,6 +300,66 @@ func nonNegative(value int) int {
 		return 0
 	}
 	return value
+}
+
+// chromeHeight 近似 Firefox 标签栏+地址栏占用的垂直空间，用于从窗口外框推算视口高度。
+const chromeHeight = 74
+
+// repairViewportConfig 修正历史落盘指纹里为 0 的 window.inner*，返回是否发生改写。
+func repairViewportConfig(config map[string]any) bool {
+	changed := false
+	for _, pair := range []struct {
+		inner  string
+		outer  string
+		chrome int
+	}{
+		{inner: "window.innerWidth", outer: "window.outerWidth", chrome: 0},
+		{inner: "window.innerHeight", outer: "window.outerHeight", chrome: chromeHeight},
+	} {
+		if configInt(config[pair.inner]) > 0 {
+			continue
+		}
+		repaired := viewportExtent(0, configInt(config[pair.outer]), pair.chrome)
+		if repaired <= 0 {
+			continue
+		}
+		config[pair.inner] = repaired
+		changed = true
+	}
+	return changed
+}
+
+// configInt 读取指纹配置里的整数值，兼容 JSON 反序列化出的 float64。
+func configInt(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case float64:
+		return int(typed)
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil {
+			return 0
+		}
+		return int(parsed)
+	}
+	return 0
+}
+
+// viewportExtent 保证注入 Camoufox 的 window.inner* 始终为正数。
+//
+// BrowserForge 生成的指纹里 innerWidth/innerHeight 可能为 0（2267 账号即如此）。
+// Camoufox 会忠实执行该伪装，Firefox BiDi 的 input.performActions 随后读到
+// viewport 0×0 并拒绝派发真实指针事件（报 "viewport dimensions (0, 0)"），
+// 导致一切依赖可信输入的点击（如 Build App 的 Launch! 按钮）永久失效。
+func viewportExtent(inner int, outer int, chrome int) int {
+	if inner > 0 {
+		return inner
+	}
+	if derived := outer - chrome; derived > 0 {
+		return derived
+	}
+	return outer
 }
 
 func screenY(screen fingerprints.ScreenFingerprint) int {

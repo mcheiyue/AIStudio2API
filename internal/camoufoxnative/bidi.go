@@ -218,6 +218,27 @@ func (client *bidiClient) evaluateBool(ctx context.Context, contextID, expressio
 	return value, nil
 }
 
+func (client *bidiClient) evaluateNode(ctx context.Context, contextID, expression string) (string, error) {
+	result, err := client.command(ctx, "script.evaluate", map[string]any{
+		"expression":      expression,
+		"target":          map[string]any{"context": contextID},
+		"awaitPromise":    false,
+		"resultOwnership": "root",
+	})
+	if err != nil {
+		return "", err
+	}
+	remote, _ := result["result"].(map[string]any)
+	if remote["type"] != "node" {
+		return "", fmt.Errorf("页面表达式未返回 DOM 节点")
+	}
+	sharedID, _ := remote["sharedId"].(string)
+	if sharedID == "" {
+		return "", fmt.Errorf("DOM 节点缺少 sharedId")
+	}
+	return sharedID, nil
+}
+
 func (client *bidiClient) waitFor(ctx context.Context, contextID, expression string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

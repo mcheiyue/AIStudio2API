@@ -36,9 +36,12 @@ type Options struct {
 	ProxyBypass      string
 	Headless         bool
 	TemporaryChat    bool
-	ReadyTimeout     time.Duration
-	Log              io.Writer
-	StartupProgress  func(StartupStage)
+	// Extensions 为未打包 Firefox 扩展目录（须含 manifest.json 且声明 gecko id），
+	// 启动时复制进隔离 profile 的 extensions 目录并豁免签名校验。
+	Extensions      []string
+	ReadyTimeout    time.Duration
+	Log             io.Writer
+	StartupProgress func(StartupStage)
 }
 
 func (options Options) reportStartup(stage StartupStage) {

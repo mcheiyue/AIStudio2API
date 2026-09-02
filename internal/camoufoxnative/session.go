@@ -2,9 +2,9 @@ package camoufoxnative
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -104,22 +104,48 @@ func (s *Session) AddInitScript(ctx context.Context, functionDeclaration string)
 	return err
 }
 
-// Navigate 在顶层 context 导航到指定 URL。
+// AddInitScriptAll 注入 preload script 到所有 browsing context（含跨域 iframe），
+// 用于需要在子帧（如 run.app）中执行的脚本（如 click capture）。
+func (s *Session) AddInitScriptAll(ctx context.Context, functionDeclaration string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("Camoufox session 已关闭")
+	}
+	// 不传 contexts 参数 → BiDi 在所有 context 中执行
+	_, err := s.client.command(ctx, "script.addPreloadScript", map[string]any{
+		"functionDeclaration": functionDeclaration,
+	})
+	return err
+}
+
+// Navigate 在顶层 context 导航到指定 URL。遇到瞬态网络错误（NET_RESET/ABORT）自动重试最多 3 次。
 func (s *Session) Navigate(ctx context.Context, rawURL string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return errors.New("Camoufox session 已关闭")
 	}
-	_, err := s.client.command(ctx, "browsingContext.navigate", map[string]any{
-		"context": s.contextID,
-		"url":     rawURL,
-		"wait":    "interactive",
-	})
-	if err != nil && !strings.Contains(err.Error(), "NS_ERROR_ABORT") {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		_, err := s.client.command(ctx, "browsingContext.navigate", map[string]any{
+			"context": s.contextID,
+			"url":     rawURL,
+			"wait":    "interactive",
+		})
+		if err == nil {
+			return nil
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "NS_ERROR_ABORT") || strings.Contains(msg, "NS_ERROR_NET_RESET") || strings.Contains(msg, "NS_ERROR_NET_INTERRUPT") {
+			lastErr = err
+			log.Printf("[camoufox] navigate attempt %d/%d transient error: %v, retrying...", attempt+1, 3, err)
+			time.Sleep(time.Duration(3*(attempt+1)) * time.Second)
+			continue
+		}
 		return fmt.Errorf("导航 %s: %w", rawURL, err)
 	}
-	return nil
+	return fmt.Errorf("导航 %s (3 次重试后): %w", rawURL, lastErr)
 }
 
 // Evaluate 在顶层 context 执行表达式（awaitPromise）。
@@ -160,6 +186,16 @@ func (s *Session) EvaluateStringInContext(ctx context.Context, contextID, expres
 		return "", errors.New("Camoufox session 已关闭")
 	}
 	return s.client.evaluateString(ctx, contextID, expression)
+}
+
+// EvaluateNode 在顶层 context 返回 DOM 节点的 BiDi sharedId。
+func (s *Session) EvaluateNode(ctx context.Context, expression string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return "", errors.New("Camoufox session 已关闭")
+	}
+	return s.client.evaluateNode(ctx, s.contextID, expression)
 }
 
 // FindFrame 返回 URL 包含 urlContains 的第一个子帧 context ID；找不到返回空串。
@@ -251,21 +287,6 @@ func (s *Session) AllContexts(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
-// DebugRawTree 返回 browsingContext.getTree 的原始响应（用于诊断 AllContexts 为何为空）。
-func (s *Session) DebugRawTree(ctx context.Context) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return "", errors.New("Camoufox session 已关闭")
-	}
-	tree, err := s.client.command(ctx, "browsingContext.getTree", map[string]any{"maxDepth": 10, "root": s.contextID})
-	if err != nil {
-		return "", err
-	}
-	b, _ := json.Marshal(tree)
-	return string(b), nil
-}
-
 // WaitFor 在顶层 context 轮询表达式直至为 true 或超时。
 func (s *Session) WaitFor(ctx context.Context, expression string, timeout time.Duration) error {
 	s.mu.Lock()
@@ -274,6 +295,15 @@ func (s *Session) WaitFor(ctx context.Context, expression string, timeout time.D
 		return errors.New("Camoufox session 已关闭")
 	}
 	return s.client.waitFor(ctx, s.contextID, expression, timeout)
+}
+
+// BrowserPID 返回 Camoufox 浏览器主进程 PID（OS 级输入注入定位窗口用）。
+// 会话未启动或已关闭时返回 0。
+func (s *Session) BrowserPID() int {
+	if s == nil || s.process == nil || s.process.command == nil || s.process.command.Process == nil {
+		return 0
+	}
+	return s.process.command.Process.Pid
 }
 
 // Close 结束 BiDi session 并清理 Camoufox profile。

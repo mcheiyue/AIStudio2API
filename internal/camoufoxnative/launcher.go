@@ -1,11 +1,14 @@
 package camoufoxnative
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -50,6 +53,12 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 	if err != nil {
 		_ = os.RemoveAll(profile)
 		return nil, "", err
+	}
+	if len(options.Extensions) > 0 {
+		if err := installProfileExtensions(profile, options.Extensions, prefs); err != nil {
+			_ = os.RemoveAll(profile)
+			return nil, "", err
+		}
 	}
 	if err := writeUserJS(profile, prefs); err != nil {
 		_ = os.RemoveAll(profile)
@@ -285,4 +294,94 @@ func firefoxPrefLiteral(value any) (string, error) {
 	default:
 		return "", fmt.Errorf("不支持 %T", value)
 	}
+}
+
+// installProfileExtensions 把扩展打包成 XPI 放进 profile 的 extensions 目录。
+// Firefox 启动时扫描该目录自动安装 <id>.xpi；Camoufox 属非品牌构建，允许关闭
+// 签名校验，autoDisableScopes=0 避免外部安装的扩展被默认禁用。
+// 注意：未打包文件夹放进 extensions 目录在 Firefox 152 上不可靠，必须 zip 成 XPI。
+func installProfileExtensions(profile string, extensions []string, prefs map[string]any) error {
+	if err := os.MkdirAll(filepath.Join(profile, "extensions"), 0o700); err != nil {
+		return fmt.Errorf("创建扩展目录: %w", err)
+	}
+	for _, extension := range extensions {
+		id, err := extensionID(extension)
+		if err != nil {
+			return err
+		}
+		xpiPath := filepath.Join(profile, "extensions", id+".xpi")
+		if err := zipDirectory(extension, xpiPath); err != nil {
+			return fmt.Errorf("打包扩展 %s: %w", id, err)
+		}
+	}
+	prefs["xpinstall.signatures.required"] = false
+	prefs["extensions.autoDisableScopes"] = 0
+	return nil
+}
+
+// extensionID 从扩展目录的 manifest.json 提取 gecko id（profile 目录安装要求以 id 命名）
+func extensionID(dir string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		return "", fmt.Errorf("读取扩展 manifest: %w", err)
+	}
+	var manifest struct {
+		BrowserSpecificSettings *struct {
+			Gecko *struct {
+				ID string `json:"id"`
+			} `json:"gecko"`
+		} `json:"browser_specific_settings"`
+		Applications *struct {
+			Gecko *struct {
+				ID string `json:"id"`
+			} `json:"gecko"`
+		} `json:"applications"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return "", fmt.Errorf("解析扩展 manifest: %w", err)
+	}
+	if manifest.BrowserSpecificSettings != nil && manifest.BrowserSpecificSettings.Gecko != nil && manifest.BrowserSpecificSettings.Gecko.ID != "" {
+		return manifest.BrowserSpecificSettings.Gecko.ID, nil
+	}
+	if manifest.Applications != nil && manifest.Applications.Gecko != nil && manifest.Applications.Gecko.ID != "" {
+		return manifest.Applications.Gecko.ID, nil
+	}
+	return "", errors.New("扩展 manifest 缺少 browser_specific_settings.gecko.id")
+}
+
+func zipDirectory(dir, xpiPath string) error {
+	file, err := os.Create(xpiPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	writer := zip.NewWriter(file)
+	err = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		header := &zip.FileHeader{Name: filepath.ToSlash(relative), Method: zip.Deflate}
+		output, err := writer.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		_, err = output.Write(data)
+		return err
+	})
+	if err != nil {
+		_ = writer.Close()
+		return err
+	}
+	return writer.Close()
 }
