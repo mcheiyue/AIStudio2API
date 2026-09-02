@@ -3,6 +3,7 @@ package buildapp
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -14,16 +15,16 @@ import (
 // 注意：只有 path + query_params，无完整 url；applet 自行拼
 // https://generativelanguage.googleapis.com{path} 并发请求，凭证由 Build App 运行时注入。
 type ProxyRequest struct {
-	EventType        string            `json:"event_type"` // 固定 "proxy_request"
-	RequestID        string            `json:"request_id"`
-	RequestAttemptID string            `json:"request_attempt_id"`
-	Method           string            `json:"method"`
-	Path             string            `json:"path"`
-	QueryParams      map[string]string `json:"query_params"`
-	Headers          map[string]string `json:"headers"`
-	Body             string            `json:"body"`
-	StreamingMode    string            `json:"streaming_mode"` // "real" | "fake" | ""
-	IsGenerative     bool              `json:"is_generative"`
+	EventType         string            `json:"event_type"` // 固定 "proxy_request"
+	RequestID         string            `json:"request_id"`
+	RequestAttemptID  string            `json:"request_attempt_id"`
+	Method            string            `json:"method"`
+	Path              string            `json:"path"`
+	QueryParams       map[string]string `json:"query_params"`
+	Headers           map[string]string `json:"headers"`
+	Body              string            `json:"body"`
+	StreamingMode     string            `json:"streaming_mode"` // "real" | "fake" | ""
+	IsGenerative      bool              `json:"is_generative"`
 	ResponseTransform interface{}       `json:"response_transform"`
 }
 
@@ -58,7 +59,7 @@ func NewServer() *Server {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
-		conns:  make(map[int]*websocket.Conn),
+		conns:   make(map[int]*websocket.Conn),
 		pending: make(map[string]chan AppletMessage),
 	}
 }
@@ -72,6 +73,15 @@ func (s *Server) SetHooks(onConnected, onClosed func(authIndex int)) {
 // Start 在 addr 上起 WS 服务（如 :9998）。阻塞。
 func (s *Server) Start(addr string) error {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/__ext_alive", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("[buildapp] EXTENSION ALIVE from %s", r.RemoteAddr)
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/__ext_log", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
+		log.Printf("[buildapp] EXT LOG: %s", string(body))
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.HandleFunc("/", s.handleWS)
 	s.srv = &http.Server{Addr: addr, Handler: mux}
 	log.Printf("[buildapp] WS server listening on ws://%s", addr)
