@@ -14,6 +14,7 @@ import (
 )
 
 type responsesRequest struct {
+	AccountID          string            `json:"account_id,omitempty"`
 	Model              string            `json:"model"`
 	Input              json.RawMessage   `json:"input"`
 	Instructions       string            `json:"instructions"`
@@ -162,6 +163,42 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 		instructions = append(instructions, inlineInstructions...)
 		generateRequest.System = strings.Join(instructions, "\n")
+	}
+	if request.AccountID != "" && s.service.AccountMode(request.AccountID) == aistudio.AccountModeBuildApp {
+		body, bodyErr := buildAppBodyFromGenerateRequest(generateRequest)
+		if bodyErr != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", bodyErr.Error())
+			return
+		}
+		events, serviceErr := s.buildApp.ServeBuildAppEvents(r.Context(), body, request.Model, request.Stream, request.AccountID)
+		if serviceErr != nil {
+			if shouldWriteRequestError(r, serviceErr) {
+				writeOpenAIError(w, statusFromError(serviceErr), openAIErrorCode(serviceErr), serviceErr.Error())
+			}
+			return
+		}
+		created := time.Now().Unix()
+		if request.Stream {
+			s.streamResponses(w, r, request, currentContents, currentInlineInstructions, responseID, created, events)
+			return
+		}
+		result, consumeErr := consumeEvents(r.Context(), events, nil)
+		if consumeErr != nil {
+			if shouldWriteRequestError(r, consumeErr) {
+				writeOpenAIError(w, statusFromError(consumeErr), openAIErrorCode(consumeErr), consumeErr.Error())
+			}
+			return
+		}
+		response, responseErr := buildResponsesObject(responseID, created, request, result)
+		if responseErr != nil {
+			writeOpenAIError(w, statusFromError(responseErr), openAIErrorCode(responseErr), responseErr.Error())
+			return
+		}
+		if request.Store == nil || *request.Store {
+			s.storeResponseState(responseID, request.PreviousResponseID, currentContents, currentInlineInstructions, result)
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
 	}
 	events, err := s.service.Generate(r.Context(), generateRequest)
 	if err != nil {
