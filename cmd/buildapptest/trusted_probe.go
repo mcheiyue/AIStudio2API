@@ -11,7 +11,7 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 )
 
-func runTrustedClickProbe(opts camoufoxnative.Options, ws *buildapp.Server, authIndex int, appletURL, model string, requestTimeout time.Duration, osInput bool, osClick bool) {
+func runTrustedClickProbe(opts camoufoxnative.Options, ws *buildapp.Server, authIndex int, appletURL, model string, requestTimeout time.Duration, osInput bool, osClick bool, toolTest bool) {
 	probeTimeout := 150*time.Second + 20*time.Second + 15*time.Second + requestTimeout + 30*time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
@@ -24,6 +24,10 @@ func runTrustedClickProbe(opts camoufoxnative.Options, ws *buildapp.Server, auth
 	defer sess.Close()
 
 	reqID := fmt.Sprintf("trusted_%d", time.Now().UnixNano())
+	body := `{"contents":[{"role":"user","parts":[{"text":"Reply with exactly: PROBE_OK"}]}]}`
+	if toolTest {
+		body = `{"contents":[{"role":"user","parts":[{"text":"What is the weather in Beijing? Use the get_weather tool to answer."}]}],"tools":[{"functionDeclarations":[{"name":"get_weather","description":"Get current weather for a city","parameters":{"type":"OBJECT","properties":{"city":{"type":"STRING"}},"required":["city"]}}]}],"toolConfig":{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":["get_weather"]}}}`
+	}
 	request := buildapp.ProxyRequest{
 		RequestID:        reqID,
 		RequestAttemptID: reqID + "_attempt_1",
@@ -31,7 +35,7 @@ func runTrustedClickProbe(opts camoufoxnative.Options, ws *buildapp.Server, auth
 		Path:             "/v1beta/models/" + model + ":generateContent",
 		QueryParams:      map[string]string{},
 		Headers:          map[string]string{"Content-Type": "application/json"},
-		Body:             `{"contents":[{"role":"user","parts":[{"text":"Reply with exactly: PROBE_OK"}]}]}`,
+		Body:             body,
 		StreamingMode:    "fake",
 		IsGenerative:     true,
 	}
@@ -97,11 +101,12 @@ func runTrustedClickProbe(opts camoufoxnative.Options, ws *buildapp.Server, auth
 					}
 					if clicked {
 						log.Printf("[trusted] os-click Launch! OK")
+						return
 					}
 				}
 			}
 		}()
-		waitTrustedResponse(ctx, ch, requestTimeout)
+		waitTrustedResponse(ctx, ch, requestTimeout, toolTest)
 		return
 	}
 
@@ -136,7 +141,7 @@ func runTrustedClickProbe(opts camoufoxnative.Options, ws *buildapp.Server, auth
 				}
 			}
 		}()
-		waitTrustedResponse(ctx, ch, requestTimeout)
+		waitTrustedResponse(ctx, ch, requestTimeout, toolTest)
 		return
 	}
 
@@ -163,7 +168,7 @@ func runTrustedClickProbe(opts camoufoxnative.Options, ws *buildapp.Server, auth
 	go retryTrustedClick(clickCtx, sess)
 
 	// 覆盖层是否消失不是成功判据——回包才是。与人手一致只点一次，随后等回包。
-	waitTrustedResponse(ctx, ch, requestTimeout)
+	waitTrustedResponse(ctx, ch, requestTimeout, toolTest)
 }
 
 // trustedClickCaptureJS 记录每次 click 的 isTrusted、坐标与元素链，用于判定
@@ -285,22 +290,23 @@ func waitForLaunchGone(ctx context.Context, sess *buildapp.Session, timeout time
 	return fmt.Errorf("Launch! 覆盖层 15s 内未消失")
 }
 
-func waitTrustedResponse(ctx context.Context, ch <-chan buildapp.AppletMessage, timeout time.Duration) {
+func waitTrustedResponse(ctx context.Context, ch <-chan buildapp.AppletMessage, timeout time.Duration, toolTest bool) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	gotStatus := false
 	gotProbe := false
+	gotAny := false
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("[trusted] 请求上下文结束（status=%v probe=%v）", gotStatus, gotProbe)
+			log.Printf("[trusted] 请求上下文结束（status=%v probe=%v data=%v）", gotStatus, gotProbe, gotAny)
 			return
 		case <-timer.C:
-			log.Printf("[trusted] 请求超时（status=%v probe=%v）", gotStatus, gotProbe)
+			log.Printf("[trusted] 请求超时（status=%v probe=%v data=%v）", gotStatus, gotProbe, gotAny)
 			return
 		case msg, ok := <-ch:
 			if !ok {
-				log.Printf("[trusted] applet 通道关闭（status=%v probe=%v）", gotStatus, gotProbe)
+				log.Printf("[trusted] applet 通道关闭（status=%v probe=%v data=%v）", gotStatus, gotProbe, gotAny)
 				return
 			}
 			switch msg.EventType {
@@ -308,13 +314,21 @@ func waitTrustedResponse(ctx context.Context, ch <-chan buildapp.AppletMessage, 
 				gotStatus = msg.Status == 200
 				log.Printf("[trusted] response_headers status=%d", msg.Status)
 			case "chunk":
+				gotAny = gotAny || strings.TrimSpace(msg.Data) != ""
 				gotProbe = gotProbe || containsProbeOK(msg.Data)
-				log.Printf("[trusted] chunk contains PROBE_OK=%v", gotProbe)
+				if toolTest && len(msg.Data) > 0 {
+					log.Printf("[trusted] chunk(data prefix): %s", msg.Data[:min(len(msg.Data), 400)])
+				} else {
+					log.Printf("[trusted] chunk contains PROBE_OK=%v", gotProbe)
+				}
 			case "error":
 				log.Printf("[trusted] applet error: %s", msg.Message)
 				return
 			case "stream_close":
-				log.Printf("[trusted] stream_close status=%v probe=%v", gotStatus, gotProbe)
+				log.Printf("[trusted] stream_close status=%v probe=%v data=%v", gotStatus, gotProbe, gotAny)
+				if toolTest {
+					log.Printf("[trusted] TOOL TEST RESULT: status=%v data=%v (functionCall 需人工核对 data 前缀)", gotStatus, gotAny)
+				}
 				return
 			}
 		}

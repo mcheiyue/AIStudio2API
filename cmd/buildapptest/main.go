@@ -27,6 +27,7 @@ func main() {
 	trustedClick := flag.Bool("trusted-click", false, "实验模式：用 BiDi 真实鼠标点击顶层 Launch!，不使用合成点击")
 	osInput := flag.Bool("os-input", false, "OS input mode: skip BiDi click, wait for external OS-level keyboard/mouse after Launch! appears")
 	osClick := flag.Bool("os-click", false, "OS click mode: 内置 OS 级真实鼠标点击 Launch!（等价人工点击，模型测试用）")
+	toolTest := flag.Bool("tool-test", false, "工具调用测试：body 带 functionDeclarations(get_weather)，验证 applet 透传 tools 后 Google 是否回包")
 	fetchEvidence := flag.Bool("fetch-evidence", false, "取证模式：注入 fetch/postMessage 记录，点 Preview 放行后 dump 实际请求参数（无需人工）")
 	headless := flag.Bool("headless", false, "无头模式（内存对照采样用）")
 	flag.Parse()
@@ -76,7 +77,7 @@ func main() {
 		return
 	}
 	if *trustedClick {
-		runTrustedClickProbe(opts, ws, *authIndexFlag, *applet, *model, *requestTimeout, *osInput, *osClick)
+		runTrustedClickProbe(opts, ws, *authIndexFlag, *applet, *model, *requestTimeout, *osInput, *osClick, *toolTest)
 		return
 	}
 
