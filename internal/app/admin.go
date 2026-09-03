@@ -237,6 +237,12 @@ func (admin *runtimeAdmin) UpdateAccount(ctx context.Context, accountID string, 
 	accountConfig.Proxy = strings.TrimSpace(input.Proxy)
 	accountConfig.Locale = strings.TrimSpace(input.Locale)
 	accountConfig.Timezone = strings.TrimSpace(input.Timezone)
+	if mode := strings.TrimSpace(input.Mode); mode != "" {
+		accountConfig.Mode = mode
+	}
+	if url := strings.TrimSpace(input.BuildAppURL); url != "" {
+		accountConfig.BuildAppURL = url
+	}
 	if err := accountConfig.Validate(); err != nil {
 		return api.AdminAccount{}, invalidAccount(err)
 	}
