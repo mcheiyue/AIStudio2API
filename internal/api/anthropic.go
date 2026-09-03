@@ -12,6 +12,7 @@ import (
 )
 
 type anthropicRequest struct {
+	AccountID     string             `json:"account_id,omitempty"`
 	Model         string             `json:"model"`
 	Messages      []anthropicMessage `json:"messages"`
 	System        json.RawMessage    `json:"system"`
@@ -93,6 +94,38 @@ func (s *server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	generateRequest, err := request.toGenerateRequest(messageID)
 	if err != nil {
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if request.AccountID != "" && s.service.AccountMode(request.AccountID) == aistudio.AccountModeBuildApp {
+		body, bodyErr := buildAppBodyFromGenerateRequest(generateRequest)
+		if bodyErr != nil {
+			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", bodyErr.Error())
+			return
+		}
+		events, serviceErr := s.buildApp.ServeBuildAppEvents(r.Context(), body, request.Model, request.Stream, request.AccountID)
+		if serviceErr != nil {
+			if shouldWriteRequestError(r, serviceErr) {
+				writeAnthropicError(w, statusFromError(serviceErr), anthropicErrorType(serviceErr), serviceErr.Error())
+			}
+			return
+		}
+		if request.Stream {
+			streamHeaders(w)
+			writer := &anthropicStreamWriter{w: w, id: messageID, model: request.Model, inputTokens: aistudio.EstimatedInputTokens(generateRequest)}
+			if startErr := writer.start(); startErr != nil {
+				return
+			}
+			s.streamAnthropic(r, writer, events)
+			return
+		}
+		result, consumeErr := consumeEvents(r.Context(), events, nil)
+		if consumeErr != nil {
+			if shouldWriteRequestError(r, consumeErr) {
+				writeAnthropicError(w, statusFromError(consumeErr), anthropicErrorType(consumeErr), consumeErr.Error())
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, buildAnthropicResponse(messageID, request.Model, result))
 		return
 	}
 	if request.Stream {
