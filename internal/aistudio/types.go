@@ -362,3 +362,7 @@ type Service interface {
 	// ServeBuildApp 把原始 HTTP 请求经账号的 Build App 中继 worker 反代到 generativelanguage。
 	ServeBuildApp(ctx context.Context, rw http.ResponseWriter, r *http.Request, accountID string) error
 }
+
+type BuildAppService interface {
+	ServeBuildAppEvents(ctx context.Context, body []byte, model string, stream bool, accountID string) (<-chan Event, error)
+}

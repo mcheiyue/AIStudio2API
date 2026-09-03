@@ -1,6 +1,7 @@
 package aistudio
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -81,6 +82,23 @@ func (s *PooledService) ServeBuildApp(ctx context.Context, rw http.ResponseWrite
 	}
 	worker.ServeHTTP(rw, r)
 	return nil
+}
+
+func (s *PooledService) ServeBuildAppEvents(ctx context.Context, body []byte, model string, stream bool, accountID string) (<-chan Event, error) {
+	path := "/v1beta/models/" + model + ":generateContent"
+	if stream {
+		path = "/v1beta/models/" + model + ":streamGenerateContent?alt=sse"
+	}
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://buildapp.local"+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	r.Header.Set("Content-Type", "application/json")
+	worker, err := s.pool.BuildAppWorker(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("获取 buildapp worker: %w", err)
+	}
+	return worker.serveEvents(ctx, r, body, stream)
 }
 
 // AccountMode 返回账号实际生效的传输层模式（未知账号返回空串）。

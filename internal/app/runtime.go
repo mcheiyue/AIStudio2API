@@ -1608,6 +1608,17 @@ func (service *trackedService) ServeBuildApp(ctx context.Context, rw http.Respon
 	return service.service.ServeBuildApp(ctx, rw, r, accountID)
 }
 
+func (service *trackedService) ServeBuildAppEvents(ctx context.Context, body []byte, model string, stream bool, accountID string) (<-chan aistudio.Event, error) {
+	if evictErr := service.workers.ForceEvictAccount(accountID); evictErr != nil {
+		log.Printf("[buildapp] evict playground worker for %s: %v", accountID, evictErr)
+	}
+	buildApp, ok := service.service.(aistudio.BuildAppService)
+	if !ok {
+		return nil, fmt.Errorf("协议服务不支持 Build App 事件流")
+	}
+	return buildApp.ServeBuildAppEvents(ctx, body, model, stream, accountID)
+}
+
 func (service *trackedService) Running() bool {
 	return service.state.Load() == serviceRunning
 }
