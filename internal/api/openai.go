@@ -13,6 +13,7 @@ import (
 )
 
 type chatRequest struct {
+	AccountID           string            `json:"account_id,omitempty"`
 	Model               string            `json:"model"`
 	Messages            []chatMessage     `json:"messages"`
 	Stream              bool              `json:"stream"`
@@ -130,6 +131,34 @@ func (s *server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	generateRequest, err := request.toGenerateRequest(requestID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if request.AccountID != "" && s.service.AccountMode(request.AccountID) == aistudio.AccountModeBuildApp {
+		body, bodyErr := buildAppBodyFromGenerateRequest(generateRequest)
+		if bodyErr != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", bodyErr.Error())
+			return
+		}
+		events, serviceErr := s.buildApp.ServeBuildAppEvents(r.Context(), body, request.Model, request.Stream, request.AccountID)
+		if serviceErr != nil {
+			if shouldWriteRequestError(r, serviceErr) {
+				writeOpenAIError(w, statusFromError(serviceErr), openAIErrorCode(serviceErr), serviceErr.Error())
+			}
+			return
+		}
+		created := time.Now().Unix()
+		if request.Stream {
+			s.streamChatCompletion(w, r, request, requestID, created, events)
+			return
+		}
+		result, consumeErr := consumeEvents(r.Context(), events, nil)
+		if consumeErr != nil {
+			if shouldWriteRequestError(r, consumeErr) {
+				writeOpenAIError(w, statusFromError(consumeErr), openAIErrorCode(consumeErr), consumeErr.Error())
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, buildChatCompletion(requestID, created, request.Model, result))
 		return
 	}
 	events, err := s.service.Generate(r.Context(), generateRequest)
