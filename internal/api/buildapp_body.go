@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
 
 const buildAppPlaceholderThoughtSignature = "context_engineering_is_the_way_to_go"
@@ -61,6 +63,113 @@ func prepareBuildAppGeminiBody(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("encode normalized Gemini body: %w", err)
 	}
 	return encoded, nil
+}
+
+func buildAppBodyFromGenerateRequest(req aistudio.GenerateRequest) ([]byte, error) {
+	body := make(map[string]any, 2)
+	contents := make([]map[string]any, 0, len(req.Contents))
+	for _, content := range req.Contents {
+		parts := make([]map[string]any, 0, len(content.Parts))
+		for _, part := range content.Parts {
+			item := make(map[string]any)
+			if part.Text != "" {
+				item["text"] = part.Text
+			}
+			if part.InlineData != nil {
+				item["inlineData"] = part.InlineData
+			}
+			if part.File != nil {
+				item["fileData"] = part.File
+			}
+			if part.FunctionCall != nil {
+				args := part.FunctionCall.Arguments
+				if len(args) == 0 {
+					args = json.RawMessage(`{}`)
+				}
+				var arguments map[string]any
+				if err := json.Unmarshal(args, &arguments); err != nil {
+					return nil, fmt.Errorf("encode function call arguments: %w", err)
+				}
+				item["functionCall"] = map[string]any{"name": part.FunctionCall.Name, "args": arguments}
+				if part.FunctionCall.ThoughtSignature != "" {
+					item["thoughtSignature"] = part.FunctionCall.ThoughtSignature
+				}
+			}
+			if part.FunctionResult != nil {
+				var response any
+				if err := json.Unmarshal(part.FunctionResult.Content, &response); err != nil {
+					return nil, fmt.Errorf("encode function result: %w", err)
+				}
+				item["functionResponse"] = map[string]any{"name": part.FunctionResult.Name, "response": response}
+			}
+			if len(item) > 0 {
+				parts = append(parts, item)
+			}
+		}
+		contents = append(contents, map[string]any{"role": string(content.Role), "parts": parts})
+	}
+	body["contents"] = contents
+	if req.System != "" {
+		body["systemInstruction"] = map[string]any{"parts": []map[string]string{{"text": req.System}}}
+	}
+	if req.Tools.Functions != nil || req.Tools.Google != nil || req.Tools.GoogleSearch != nil {
+		tools := make([]map[string]any, 0, 2)
+		if len(req.Tools.Functions) > 0 {
+			declarations := make([]map[string]any, 0, len(req.Tools.Functions))
+			for _, declaration := range req.Tools.Functions {
+				item := map[string]any{"name": declaration.Name}
+				if declaration.Description != "" {
+					item["description"] = declaration.Description
+				}
+				if len(declaration.Parameters) > 0 {
+					parameters, err := normalizeBuildAppSchemaTypes(declaration.Parameters)
+					if err != nil {
+						return nil, fmt.Errorf("normalize function declaration %q: %w", declaration.Name, err)
+					}
+					item["parameters"] = json.RawMessage(parameters)
+				}
+				declarations = append(declarations, item)
+			}
+			tools = append(tools, map[string]any{"functionDeclarations": declarations})
+		}
+		if req.Tools.GoogleSearch != nil {
+			tools = append(tools, map[string]any{"googleSearch": req.Tools.GoogleSearch})
+		}
+		body["tools"] = tools
+		if req.Tools.ToolConfig.Mode != "" {
+			body["toolConfig"] = map[string]any{"functionCallingConfig": map[string]string{"mode": strings.ToUpper(req.Tools.ToolConfig.Mode)}}
+		}
+	}
+	config := make(map[string]any)
+	if req.Config.Temperature != nil {
+		config["temperature"] = req.Config.Temperature
+	}
+	if req.Config.TopP != nil {
+		config["topP"] = req.Config.TopP
+	}
+	if req.Config.TopK != nil {
+		config["topK"] = req.Config.TopK
+	}
+	if req.Config.MaxOutputTokens != nil {
+		config["maxOutputTokens"] = req.Config.MaxOutputTokens
+	}
+	if len(req.Config.StopSequences) > 0 {
+		config["stopSequences"] = req.Config.StopSequences
+	}
+	if req.Config.ResponseMIMEType != "" {
+		config["responseMimeType"] = req.Config.ResponseMIMEType
+	}
+	if len(req.Config.ResponseSchema) > 0 {
+		config["responseSchema"] = json.RawMessage(req.Config.ResponseSchema)
+	}
+	if len(config) > 0 {
+		body["generationConfig"] = config
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode Build App body: %w", err)
+	}
+	return prepareBuildAppGeminiBody(encoded)
 }
 
 func normalizeBuildAppTools(body map[string]json.RawMessage) error {
