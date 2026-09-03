@@ -209,6 +209,12 @@ func (s *server) handleGeminiAction(w http.ResponseWriter, r *http.Request) {
 		s.handleGeminiVideoCreate(w, r, model)
 		return
 	}
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(rawBody))
 	var request geminiRequest
 	if err := decodeJSON(r, &request); err != nil {
 		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
@@ -217,6 +223,13 @@ func (s *server) handleGeminiAction(w http.ResponseWriter, r *http.Request) {
 	if len(request.Contents) == 0 {
 		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "contents is required")
 		return
+	}
+	if request.AccountID != "" && s.service.AccountMode(request.AccountID) == aistudio.AccountModeBuildApp {
+		switch method {
+		case "generateContent", "streamGenerateContent":
+			s.handleGeminiBuildApp(w, r, rawBody, request.AccountID)
+			return
+		}
 	}
 	generateRequest, err := request.toGenerateRequest(newID("resp"), model)
 	if err != nil {
@@ -707,29 +720,6 @@ func (s *server) handleGeminiCountTokens(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, request aistudio.GenerateRequest, stream bool) {
-	// Build App 中继：账号 mode=buildapp 时把原始 Gemini 请求转给 applet 代理访问 generativelanguage，
-	// 绕过 WAA 私有 RPC。request 已被解析消费，这里重建原始请求体转发。
-	if request.AccountID != "" && s.service.AccountMode(request.AccountID) == aistudio.AccountModeBuildApp {
-		targetAccount := request.AccountID // 锁定目标账号 ID，避免把 AccountID 带进发往 Google 的 body
-		// 只转发 applet 识别的极简 body：contents + systemInstruction（完整 GenerateRequest 会让 proxy browser 卡 300s）
-		forward := map[string]any{"contents": request.Contents}
-		if request.System != "" {
-			forward["systemInstruction"] = map[string]any{"parts": []map[string]any{{"text": request.System}}}
-		}
-		body, mErr := json.Marshal(forward)
-		if mErr != nil {
-			writeGeminiError(w, http.StatusInternalServerError, "buildapp_error", mErr.Error())
-			return
-		}
-		proxyReq := r.Clone(r.Context())
-		proxyReq.Body = io.NopCloser(bytes.NewReader(body))
-		proxyReq.ContentLength = int64(len(body))
-		proxyReq.Header.Set("Content-Type", "application/json")
-		if err := s.service.ServeBuildApp(r.Context(), w, proxyReq, targetAccount); err != nil {
-			writeGeminiError(w, http.StatusBadGateway, "buildapp_error", err.Error())
-		}
-		return
-	}
 	events, err := s.service.Generate(r.Context(), request)
 	if err != nil {
 		if shouldWriteRequestError(r, err) {
