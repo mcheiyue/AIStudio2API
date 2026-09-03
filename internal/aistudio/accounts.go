@@ -2360,6 +2360,10 @@ func (p *AccountPool) BootstrapModel(accountID string) (string, error) {
 }
 
 func accountBootstrapModels(account *Account) []string {
+	// Build App 账号不预热 WAA worker（按需懒加载）
+	if account.Config.Mode == "buildapp" {
+		return nil
+	}
 	models := make([]string, 0, len(account.Models))
 	seen := make(map[string]struct{}, len(account.Models))
 	appendModel := func(modelID string) {

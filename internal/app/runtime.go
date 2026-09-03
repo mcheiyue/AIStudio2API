@@ -1672,28 +1672,33 @@ func (service *trackedService) Start(ctx context.Context, launching func()) ([]a
 			}
 		}
 		models = service.modelSnapshot()
-		if len(models) == 0 {
+		if len(models) == 0 && service.workers.PrewarmTarget() > 0 {
 			stopCaller()
 			return nil, false, service.finishLaunch(transitionDone, dataCancel, catalogDone, aistudio.ErrNoEligibleAccount)
 		}
 	}
-	service.requests.log("service", "INFO", fmt.Sprintf(
-		"生成服务启动 | 2/2 | 预热 WAA Worker | 模型=%d | 目标=%d",
-		len(models), service.workers.PrewarmTarget(),
-	))
-	firstWarm := service.workers.StartPrewarm(dataContext)
-	select {
-	case <-dataContext.Done():
-		stopCaller()
-		return nil, false, service.finishLaunch(transitionDone, dataCancel, catalogDone, dataContext.Err())
-	case warmErr, ok := <-firstWarm:
-		if !ok {
-			warmErr = fmt.Errorf("WAA 预热未返回就绪账户")
-		}
-		if warmErr != nil {
+	// Build App only 部署（所有账号 mode=buildapp）时预热目标为 0，直接启用服务
+	if service.workers.PrewarmTarget() > 0 {
+		service.requests.log("service", "INFO", fmt.Sprintf(
+			"生成服务启动 | 2/2 | 预热 WAA Worker | 模型=%d | 目标=%d",
+			len(models), service.workers.PrewarmTarget(),
+		))
+		firstWarm := service.workers.StartPrewarm(dataContext)
+		select {
+		case <-dataContext.Done():
 			stopCaller()
-			return nil, false, service.finishLaunch(transitionDone, dataCancel, catalogDone, warmErr)
+			return nil, false, service.finishLaunch(transitionDone, dataCancel, catalogDone, dataContext.Err())
+		case warmErr, ok := <-firstWarm:
+			if !ok {
+				warmErr = fmt.Errorf("WAA 预热未返回就绪账户")
+			}
+			if warmErr != nil {
+				stopCaller()
+				return nil, false, service.finishLaunch(transitionDone, dataCancel, catalogDone, warmErr)
+			}
 		}
+	} else {
+		service.requests.log("service", "INFO", "生成服务启动 | 2/2 | Build App only 部署，跳过 WAA 预热")
 	}
 	if !stopCaller() {
 		return nil, false, service.finishLaunch(transitionDone, dataCancel, catalogDone, ctx.Err())
