@@ -1,0 +1,40 @@
+=== RUN   TestParseLaunchHit
+--- PASS: TestParseLaunchHit (0.00s)
+=== RUN   TestParseLaunchHitRejectsMissingHit
+--- PASS: TestParseLaunchHitRejectsMissingHit (0.00s)
+=== RUN   TestNewProxyRequest_JSONBody_preservesExactBytes
+--- PASS: TestNewProxyRequest_JSONBody_preservesExactBytes (0.00s)
+=== RUN   TestNewProxyRequest_JSONBody_stripsProxyPrefixAndSetsStreamMode
+--- PASS: TestNewProxyRequest_JSONBody_stripsProxyPrefixAndSetsStreamMode (0.00s)
+=== RUN   TestNewProxyRequest_binaryBody_roundtripsExactBytes
+--- PASS: TestNewProxyRequest_binaryBody_roundtripsExactBytes (0.00s)
+=== RUN   TestNewProxyRequest_uploadJSONMetadata_usesBodyB64
+--- PASS: TestNewProxyRequest_uploadJSONMetadata_usesBodyB64 (0.00s)
+=== RUN   TestRelayPayloadBytes_rejectsMalformedBase64
+--- PASS: TestRelayPayloadBytes_rejectsMalformedBase64 (0.00s)
+=== RUN   TestRelayPayloadBytes_rejectsAmbiguousBody
+--- PASS: TestRelayPayloadBytes_rejectsAmbiguousBody (0.00s)
+=== RUN   TestNewProxyRequest_rejectsInvalidMethodPathAndMIME
+=== RUN   TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/trace
+=== RUN   TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/connect
+=== RUN   TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/admin_path
+=== RUN   TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/external_url_path
+=== RUN   TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/scheme_path
+=== RUN   TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/dot-dot
+=== RUN   TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/upload_missing_mime
+--- PASS: TestNewProxyRequest_rejectsInvalidMethodPathAndMIME (0.00s)
+    --- PASS: TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/trace (0.00s)
+    --- PASS: TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/connect (0.00s)
+    --- PASS: TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/admin_path (0.00s)
+    --- PASS: TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/external_url_path (0.00s)
+    --- PASS: TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/scheme_path (0.00s)
+    --- PASS: TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/dot-dot (0.00s)
+    --- PASS: TestNewProxyRequest_rejectsInvalidMethodPathAndMIME/upload_missing_mime (0.00s)
+=== RUN   TestNewProxyRequest_rejectsOversizedBody
+--- PASS: TestNewProxyRequest_rejectsOversizedBody (0.00s)
+=== RUN   TestSubmitRequest_rejectsExternalURLWithoutPendingLeak
+--- PASS: TestSubmitRequest_rejectsExternalURLWithoutPendingLeak (0.00s)
+=== RUN   TestRelayHTTPStatus_untypedErrorIsBadGateway
+--- PASS: TestRelayHTTPStatus_untypedErrorIsBadGateway (0.00s)
+PASS
+ok  	github.com/Mag1cFall/AIStudio2API/internal/buildapp	0.035s

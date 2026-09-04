@@ -22,8 +22,9 @@ type ProxyRequest struct {
 	Path              string            `json:"path"`
 	QueryParams       map[string]string `json:"query_params"`
 	Headers           map[string]string `json:"headers"`
-	Body              string            `json:"body"`
-	StreamingMode     string            `json:"streaming_mode"` // "real" | "fake" | ""
+	Body              string            `json:"body"`               // 现有 generateContent 的 JSON 文本
+	BodyB64           string            `json:"body_b64,omitempty"` // 二进制上传，与 iBUHub body_b64 对齐
+	StreamingMode     string            `json:"streaming_mode"`     // "real" | "fake" | ""
 	IsGenerative      bool              `json:"is_generative"`
 	ResponseTransform interface{}       `json:"response_transform"`
 }

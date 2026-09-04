@@ -1,12 +1,9 @@
 package buildapp
 
 import (
-	"fmt"
 	"math/rand"
 	"net/http"
 	"net/url"
-	"strings"
-	"time"
 )
 
 // Transport 是 Build App 传输层：把用户（已转成 Gemini native 的）请求经 WS 中继给 applet，
@@ -27,48 +24,15 @@ func NewTransport(ws *Server, authIndex int, apiKey string) *Transport {
 // path 应为 Gemini native 路径（如 /v1beta/models/gemini-2.5-flash:generateContent）；
 // 若上游带 /proxy 前缀则在此剥离（与 iBUHub _buildProxyRequest 一致）。
 func (t *Transport) SubmitRequest(r *http.Request, body []byte) (string, <-chan AppletMessage, error) {
-	path := strings.TrimPrefix(r.URL.Path, "/proxy")
-	reqID := fmt.Sprintf("req_%d_%s", time.Now().UnixNano(), randString(6))
-	headers := headerToMap(r.Header)
-	// 必须剥掉客户端原始 Content-Length（含 accountID 时字节数与真实转发 body 不符，
-	// 会让 applet 转给 Google 后 Google 一直等更多字节→300s 超时 504）。
-	// Accept-Encoding 同理，会让 applet 期望压缩响应而解不出。
-	delete(headers, "Content-Length")
-	delete(headers, "Content-Length-Lower") // 防御性
-	delete(headers, "Accept-Encoding")
-	if t.APIKey != "" {
-		headers["x-goog-api-key"] = t.APIKey
-	}
-	queryParams := queryToMap(r.URL.Query())
-	// applet 用 2267 会话鉴权，不需要也不接受上游的 ?key=（无效 key 会让 Google 拒、且 applet 不回包）。
-	// 透传给 Google 的 key 必须剥掉；同样 alt 由下方流式逻辑自行决定。
-	delete(queryParams, "key")
-	delete(queryParams, "alt")
-	// iBUHub 约定：非流式 :generateContent 用 streaming_mode="fake"（applet 转成伪流一次性返回）；
-	// 仅 :streamGenerateContent 用 "real" + alt=sse 走真正的 SSE。
-	streamingMode := "fake"
-	if strings.Contains(path, "streamGenerateContent") {
-		streamingMode = "real"
-		if _, ok := queryParams["alt"]; !ok {
-			queryParams["alt"] = "sse"
-		}
-	}
-	pr := ProxyRequest{
-		RequestID:        reqID,
-		RequestAttemptID: fmt.Sprintf("%s_attempt_1_%s", reqID, randString(4)),
-		Method:           r.Method,
-		Path:             path,
-		QueryParams:      queryParams,
-		Headers:          headers,
-		Body:             string(body),
-		StreamingMode:    streamingMode,
-		IsGenerative:     strings.Contains(path, "generateContent"),
+	pr, err := newProxyRequest(r, body, t.APIKey)
+	if err != nil {
+		return "", nil, err
 	}
 	ch, err := t.ws.Submit(t.authIndex, pr)
 	if err != nil {
 		return "", nil, err
 	}
-	return reqID, ch, nil
+	return pr.RequestID, ch, nil
 }
 
 // PumpTo 把 applet 回传的消息泵送到 HTTP 响应：response_headers 写状态+头，chunk 写数据，

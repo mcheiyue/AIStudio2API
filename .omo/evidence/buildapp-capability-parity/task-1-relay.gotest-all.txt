@@ -1,0 +1,6 @@
+go test ./... -count=1
+ok  	github.com/Mag1cFall/AIStudio2API/internal/aistudio
+ok  	github.com/Mag1cFall/AIStudio2API/internal/api
+ok  	github.com/Mag1cFall/AIStudio2API/internal/buildapp
+ok  	github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative
+exit 0
