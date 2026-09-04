@@ -40,7 +40,7 @@ cd ..
 go run ./cmd/aistudio2api
 ```
 
-管理页面的“账户”页是默认认证入口，可以新增账户、重新登录、验证、编辑、启停和删除账户。新增账户时会直接启动隔离 Camoufox 登录。`setup` 保留以下四种命令行导入入口：
+管理页面的“账户”页提供 Chrome 批量导入和浏览器登录，也可以重新登录、验证、编辑、启停和删除账户。浏览器登录会在隔离 Camoufox 中完成并自动读取邮箱。`setup` 保留以下四种命令行导入入口：
 
 | 入口 | 命令 | 适用场景 |
 | --- | --- | --- |
@@ -54,12 +54,11 @@ go run ./cmd/aistudio2api
 | 参数 | 作用 |
 | --- | --- |
 | `--chrome-root <DIR>` | 指定 Chrome User Data 根目录 |
-| `--label <EMAIL>` | 设置单个导入账户的标签；隔离登录时必须提供 Google 邮箱 |
 | `--proxy <URL>` | 固定到账户初始化、WAA 与业务请求 |
 | `--locale <LOCALE>` | 设置账户语言 |
 | `--timezone <IANA_ZONE>` | 设置账户时区 |
 
-`--storage-state`、`--login` 与 Chrome 导入参数分别构成文件导入、隔离登录和浏览器导入模式。`--label` 适用于单个 Chrome 导入结果；隔离登录使用 `--login --label <Google 邮箱>`。`setup` 要求 `AISTUDIO_AUTH_STATES` 指向一个账户目录。
+`--storage-state`、`--login` 与 Chrome 导入参数分别构成文件导入、隔离登录和浏览器导入模式。隔离登录使用 `--login`。`setup` 要求 `AISTUDIO_AUTH_STATES` 指向一个账户目录。
 
 `--proxy` 会同时固定到新账户的初始化、WAA 与业务请求，接受无认证信息的 HTTP、HTTPS 或 SOCKS5 URL。`--locale` 和 `--timezone` 设置账户环境；Chrome 导入未显式指定语言时读取 Profile 的首选语言。Camoufox 按以下顺序定位：进程环境变量 `CAMOUFOX_PATH`、`runtime/camoufox/`、可执行文件旁的同名目录、Windows 本机 Camoufox 缓存。全部不存在时自动下载当前平台的固定版本。
 
@@ -127,7 +126,7 @@ HTTP route
   -> capability-aware account lease
   -> AI Studio array encoder
   -> per-account WAA proof
-  -> authenticated MakerSuite HTTP transport
+  -> fingerprinted Camoufox GenerateContent transport
   -> incremental response decoder
   -> canonical events
   -> client protocol response
@@ -135,7 +134,7 @@ HTTP route
 
 WebSocket 入口沿用相同分层：`internal/api` 解码公开协议，`internal/app` 绑定账户和运行状态，`internal/aistudio` 执行 WebChannel 与规范事件转换。公开适配器只消费规范请求与事件；账户文件、WAA 对象、原始数组和资源粘性由 `internal/aistudio` 与 `internal/app` 管理。
 
-Camoufox 由 Go 通过 WebDriver BiDi 直接管理。启动数据面时，服务按 `WARM_WORKER_LIMIT` 与 `WARM_STARTUP_CONCURRENCY` 准备隔离、无头、长驻的账户 runtime，并在需要其他账户能力时替换最久未用的空闲 runtime。每个 runtime 在官网触发 GenerateContent 并于网络发送前拦截请求，以取得官方 WAA service 与动态请求头；后续业务正文由 Go 编码并通过同账户固定出口发送。HTTP transport 使用与当前 Camoufox 对齐的 Firefox 152 TLS、HTTP/2 和请求头顺序。源码和 Release 均不包含 Python 数据面、Node.js 浏览器 worker 或 Playwright runtime。
+Camoufox 由 Go 通过 WebDriver BiDi 直接管理。启动数据面时，服务按 `WARM_WORKER_LIMIT` 与 `WARM_STARTUP_CONCURRENCY` 准备隔离、无头、长驻的账户 runtime，并在需要其他账户能力时替换最久未用的空闲 runtime。每个 runtime 在官网触发 GenerateContent 并于网络发送前拦截请求，以取得官方 WAA service 与动态请求头；后续业务正文由 Go 编码，在同步官网 prompt 状态并生成 fresh proof 后，通过同一固定指纹页面的原生 `fetch` 发送，响应流由 WebDriver BiDi 分块交回 Go。其他 MakerSuite、Drive 与媒体控制面请求继续使用账户固定出口的 Go HTTP transport。源码和 Release 均不包含 Python 数据面、Node.js 浏览器 worker 或 Playwright runtime。
 
 ## 3. 配置、账户和持久状态
 
@@ -213,7 +212,7 @@ POST /api/control/start
 
 账户更新以 `account.json` 原子写入为持久提交点。`internal/app` 先准备 `pending`（尚未提交）的固定出口，关闭旧 Worker并锁定该账户的 Worker 配置，再调用 `AccountLease.SaveConfig`；保存成功后依次提交 Worker 配置与固定出口。准备、关闭或保存失败时丢弃 pending 更新；保存后的租约释放错误原样返回，已发布配置继续生效。
 
-账户调度先按每个账户实时 `ListModels` 返回的模型和方法筛选，再选择已经就绪且有并发槽位的 Worker。相同条件下优先使用目标模型最近首事件更快的账户。每个账号最多同时租用 `PER_ACCOUNT_CONCURRENCY` 个请求槽位；首个请求获取跨进程文件锁，最后一个请求释放。WAA proof 由账号 worker 串行生成，MakerSuite HTTP 响应可并发流式输出，Cookie 在响应头到达时由单个写入流程与最新账户状态合并。未固定账户和资源的请求遇到可重试的 401、403、404、429、5xx 或单账户初始化超时时，可以在首个上游语义事件前继续切换尚未尝试的同能力账户；显式账户、Drive 文件和 Veo operation 始终保持创建账户粘性。Chrome 导入状态保留续签材料，HTTP `401` 时在同一固定出口续签一次、重建该账户 WAA runtime 并重放请求。
+账户调度先按每个账户实时 `ListModels` 返回的模型和方法筛选，再选择已经就绪且有并发槽位的 Worker。相同条件下优先使用目标模型最近首事件更快的账户。每个账号最多同时租用 `PER_ACCOUNT_CONCURRENCY` 个请求槽位；首个请求获取跨进程文件锁，最后一个请求释放。WAA proof 由账号 worker 串行生成，`GenerateContent` 由同一 Camoufox 页面并发发送并流式读取；请求前使用浏览器当前 Cookie 生成 Authorization，响应头到达后把浏览器 Cookie 原子同步到账户持久状态。其他 MakerSuite HTTP 响应的 Cookie 在响应头到达时与最新账户状态合并。未固定账户和资源的请求遇到可重试的 401、403、404、429、5xx 或单账户初始化超时时，可以在首个上游语义事件前继续切换尚未尝试的同能力账户；显式账户、Drive 文件和 Veo operation 始终保持创建账户粘性。Chrome 导入状态保留续签材料，HTTP `401` 时在同一固定出口续签一次、重建该账户 WAA runtime 并重放请求。
 
 Worker 容量由热池目标、活动上限和单账户并发共同约束。活动数低于 `MAX_ACTIVE_WORKERS` 时直接启动并发布新 Worker。容量已满且存在空闲旧实例时，先启动 pending Worker（正在启动、尚未发布的替代 Worker），再关闭最久未用的空闲 Worker；旧实例成功关闭后发布替代 Worker。启动失败或取消时现有 Worker 继续服务。旧 Worker 与 pending 回收同时失败时，两份进程与租约均保留为 cleanup pending（仍待关闭）并占用容量槽，后续 Stop 会重试关闭。
 
@@ -234,14 +233,14 @@ Worker 容量由热池目标、活动上限和单账户并发共同约束。活�
 
 | 操作 | scope | 成功与失败语义 |
 | --- | --- | --- |
-| 普通 GenerateContent | `<modelID>` | 规范 `EventFinish` 到达后写 `verified`；Code 7 清该模型成功记录 |
+| 普通 GenerateContent | `<modelID>` | 规范 `EventFinish` 到达后写 `verified`；Code 7 保留已有记录 |
 | CountTokens | `count-tokens:<modelID>` | 成功清该 scope 冷却，模型 `verified` 保持原值 |
-| Transcribe | `<modelID>` | 非空文本或 segments 写 `verified`；生成 Code 7 清该模型记录 |
+| Transcribe | `<modelID>` | 非空文本或 segments 写 `verified`；Code 7 保留已有记录 |
 | Live 纯文本 | `<modelID>` | setup 成功写 `verified`；每次 `SendText` 开始一次模型资格检查，`turn_complete` 更新成功 |
 | Live 音频或图像 | `bidi-media:<modelID>` | `SendMedia` 开始一次模型资格检查并更新媒体 scope |
 | Robotics | `bidi-media:<modelID>` | `SendText` 开始一次模型资格检查，`turn_complete` 更新成功 |
 
-`ModelAccessKey(scope, model)` 会移除 `models/` 前缀；空 scope 返回规范模型 ID，非空 scope 返回 `<scope>:<canonicalModelID>`。Bidi setup 使用 lease（账户租约）时间，会话内每个 qualifying turn（一次模型资格检查）分配严格递增的 attempt 时间，对应的 `turn_complete` 或 Code 7 消费同一次 attempt。普通流式生成在规范 `EventFinish` 到达时写 `verified`；此前的 text、reasoning、tool、usage 和首事件用于输出与性能统计，终态前断流、取消或错误保持原验证状态。
+`ModelAccessKey(scope, model)` 会移除 `models/` 前缀；空 scope 返回规范模型 ID，非空 scope 返回 `<scope>:<canonicalModelID>`。Bidi setup 使用 lease（账户租约）时间，会话内每个 qualifying turn（一次模型资格检查）分配严格递增的 attempt 时间，`turn_complete` 消费对应 attempt。普通流式生成在规范 `EventFinish` 到达时写 `verified`；此前的 text、reasoning、tool、usage 和首事件用于输出与性能统计，终态前断流、取消或错误保持原验证状态。
 
 模型目录刷新为全部 enabled ready/busy 账户并发执行。同步报错或返回空目录的账户进入 generation 内的 pending ID 集合；每个非空结果立即更新公共目录、账户状态并在 RUNNING 期间预热更多 Worker。初次 fan-out（同时向全部符合条件的账户发出 `ListModels`）结束后，单个 30 秒 ticker（定时器）对排序后的 pending ID 再次并发刷新，账户删除会同步移除 pending ID。`modelRevision` 跟踪账户和配置变化，生成服务开始接收请求前会确认已应用当前 revision。
 
@@ -267,7 +266,7 @@ Worker 容量由热池目标、活动上限和单账户并发共同约束。活�
 | 能力 | 路由 |
 | --- | --- |
 | 健康与状态 | `GET /health`、`GET /api/status` |
-| 模型与账户 | `GET /api/models`、`GET/POST /api/accounts`、`PUT/DELETE /api/accounts/{id}` |
+| 模型与账户 | `GET /api/models`、`GET/POST /api/accounts`、`GET/POST /api/accounts/import/chrome`、`PUT/DELETE /api/accounts/{id}` |
 | 登录与验证 | `POST /api/accounts/{id}/login`、`POST /api/accounts/{id}/verify` |
 | 生成服务 | `POST /api/control/start`、`POST /api/control/stop` |
 | 配置 | `GET /api/config`、`PUT /api/config` |

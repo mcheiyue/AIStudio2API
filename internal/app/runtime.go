@@ -191,6 +191,26 @@ func (preparer *accountWorkerPreparer) Prepare(ctx context.Context, request aist
 	return preparer.worker.Prepare(ctx, request)
 }
 
+// SendProtected 保证浏览器请求仍绑定当前有效账户 Worker
+func (preparer *accountWorkerPreparer) SendProtected(ctx context.Context, request aistudio.ProtectedRequest) (*aistudio.RPCResponse, error) {
+	preparer.account.mu.Lock()
+	defer preparer.account.mu.Unlock()
+	if preparer.account.worker != preparer.worker || preparer.account.bootstrapModel != preparer.bootstrapModel {
+		return nil, errAccountWorkerReplaced
+	}
+	return preparer.worker.SendProtected(ctx, request)
+}
+
+// BrowserStorageState 返回同一有效账户 Worker 的浏览器 Cookie 状态
+func (preparer *accountWorkerPreparer) BrowserStorageState(ctx context.Context) (aistudio.StorageState, error) {
+	preparer.account.mu.Lock()
+	defer preparer.account.mu.Unlock()
+	if preparer.account.worker != preparer.worker || preparer.account.bootstrapModel != preparer.bootstrapModel {
+		return aistudio.StorageState{}, errAccountWorkerReplaced
+	}
+	return preparer.worker.BrowserStorageState(ctx)
+}
+
 // accountWorkerInitError 表示单个账户的 WAA worker 初始化失败
 type accountWorkerInitError struct {
 	err error
@@ -1866,19 +1886,6 @@ func (service *trackedService) performanceForModelLocked(accountID string, model
 	return observed, ok
 }
 
-func (service *trackedService) forgetPerformance(accountID string, model string) {
-	accountID = strings.TrimSpace(accountID)
-	model = strings.TrimPrefix(strings.TrimSpace(model), "models/")
-	service.performanceMu.Lock()
-	if models := service.performance[accountID]; models != nil {
-		delete(models, model)
-		if len(models) == 0 {
-			delete(service.performance, accountID)
-		}
-	}
-	service.performanceMu.Unlock()
-}
-
 func (service *trackedService) markModelAccessVerifiedAsync(
 	accountID string,
 	accountLabel string,
@@ -2426,9 +2433,6 @@ func (service *trackedService) GenerateVideo(ctx context.Context, request aistud
 }
 
 func needsWAARuntimeRecovery(cause error, generationChanged bool, workerFailed bool, workerReplaced bool) bool {
-	if aistudio.DefinitiveModelAccessFailure(cause) {
-		return false
-	}
 	return generationChanged || workerFailed || workerReplaced ||
 		aistudio.DefinitiveWAARuntimeFailure(cause)
 }
@@ -2711,11 +2715,27 @@ func (activity *upstreamActivity) logFields(now time.Time) string {
 	)
 }
 
+func inlineImageInput(contents []aistudio.Content) (int, int64) {
+	count := 0
+	var bytes int64
+	for _, content := range contents {
+		for _, part := range content.Parts {
+			if part.InlineData == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(part.InlineData.MIME)), "image/") {
+				continue
+			}
+			count++
+			bytes += int64(len(part.InlineData.Data))
+		}
+	}
+	return count, bytes
+}
+
 // Generate 获取唯一账户并转发规范事件流
 func (service *trackedService) Generate(ctx context.Context, request aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
 	generationStartedAt := time.Now()
 	api.SetAccessLogTarget(ctx, request.Model, "")
 	api.SetAccessLogGenerationConfig(ctx, request.Config)
+	api.SetAccessLogGenerationInput(ctx, request)
 	api.StartAccessLog(ctx)
 	requestCtx, cancel, err := service.dataRequestContext(ctx)
 	if err != nil {
@@ -2820,6 +2840,44 @@ func (service *trackedService) generateWithRetry(
 		accountLabel := lease.Account().Config.Label
 		api.SetAccessLogTarget(requestCtx, modelID, accountLabel)
 		service.requests.markRunning(request.ID, request.AccountID, accountLabel)
+		attemptCtx := aistudio.ContextWithAccountLease(requestCtx, lease)
+		var attemptCopies *aistudio.TemporaryFileCopies
+		copiedFileCount := 0
+		if copyFiles {
+			fileCopies, ok := service.service.(interface {
+				CopyFileReferencesToLease(context.Context, *aistudio.AccountLease, []aistudio.Content) ([]aistudio.Content, *aistudio.TemporaryFileCopies, error)
+			})
+			if !ok {
+				err = fmt.Errorf("文件引用跨账户服务不可用")
+			} else {
+				request.Contents, attemptCopies, err = fileCopies.CopyFileReferencesToLease(
+					requestCtx, lease, originalContents,
+				)
+				if err == nil {
+					copiedFileCount = attemptCopies.Count()
+				}
+			}
+		}
+		imageCount, imageBytes := inlineImageInput(request.Contents)
+		if err == nil && imageCount > 0 {
+			uploader, ok := service.service.(interface {
+				UploadInlineImagesToLease(context.Context, *aistudio.AccountLease, []aistudio.Content, *aistudio.TemporaryFileCopies) ([]aistudio.Content, *aistudio.TemporaryFileCopies, error)
+			})
+			if !ok {
+				err = fmt.Errorf("内联图片上传服务不可用")
+			} else {
+				uploadStartedAt := time.Now()
+				request.Contents, attemptCopies, err = uploader.UploadInlineImagesToLease(
+					requestCtx, lease, request.Contents, attemptCopies,
+				)
+				if err == nil {
+					service.requests.log(accountLabel, "INFO", fmt.Sprintf(
+						"内联图片上传完成 | 图片=%d | 原始=%dB | 耗时=%s",
+						imageCount, imageBytes, time.Since(uploadStartedAt).Round(time.Millisecond),
+					))
+				}
+			}
+		}
 		prepareStartedAt := time.Now()
 		prepareTiming := newRequestPreparationTiming(prepareStartedAt)
 		prepareWarningDone := make(chan struct{})
@@ -2832,26 +2890,12 @@ func (service *trackedService) generateWithRetry(
 			close(prepareWarningDone)
 		})
 		activity = &upstreamActivity{}
-		attemptCtx := aistudio.ContextWithAccountLease(requestCtx, lease)
 		attemptCtx = aistudio.ContextWithStreamActivityObserver(attemptCtx, activity.observe)
 		attemptCtx = aistudio.ContextWithRequestPhaseObserver(attemptCtx, prepareTiming.observe)
-		var attemptCopies *aistudio.TemporaryFileCopies
-		if copyFiles {
-			fileCopies, ok := service.service.(interface {
-				CopyFileReferencesToLease(context.Context, *aistudio.AccountLease, []aistudio.Content) ([]aistudio.Content, *aistudio.TemporaryFileCopies, error)
-			})
-			if !ok {
-				err = fmt.Errorf("文件引用跨账户服务不可用")
-			} else {
-				request.Contents, attemptCopies, err = fileCopies.CopyFileReferencesToLease(
-					requestCtx, lease, originalContents,
-				)
-			}
-		}
 		if err == nil {
 			source, err = service.service.Generate(attemptCtx, request)
 		}
-		if err == nil && attemptCopies != nil && attemptCopies.Count() > 0 {
+		if err == nil && copiedFileCount > 0 {
 			sourceLabels := make([]string, 0, len(attemptCopies.SourceAccountIDs()))
 			statuses := service.pool.Status()
 			for _, sourceID := range attemptCopies.SourceAccountIDs() {
@@ -2866,7 +2910,7 @@ func (service *trackedService) generateWithRetry(
 			}
 			service.requests.log(accountLabel, "INFO", fmt.Sprintf(
 				"文件引用复制 | 来源=%s | 目标=%s | 文件=%d",
-				strings.Join(sourceLabels, ","), accountLabel, attemptCopies.Count(),
+				strings.Join(sourceLabels, ","), accountLabel, copiedFileCount,
 			))
 		}
 		prepareElapsed := time.Since(prepareStartedAt)
@@ -2908,21 +2952,6 @@ func (service *trackedService) generateWithRetry(
 		}
 		workerFailed := service.workers.WorkerFailed(request.AccountID)
 		waaRuntimeFailed := aistudio.DefinitiveWAARuntimeFailure(err)
-		permissionDenied := aistudio.DefinitiveModelAccessFailure(err)
-		if permissionDenied {
-			service.forgetPerformance(request.AccountID, modelID)
-			forgotten, stateErr := service.pool.ForgetModelAccessVerifiedIfGeneration(
-				request.AccountID, modelID, lease.ModelAccessGeneration(), lease.CheckedAt(),
-			)
-			if stateErr != nil {
-				service.requests.log(accountLabel, "ERROR", fmt.Sprintf(
-					"模型成功记录更新失败 | 模型=%s | 错误=%s",
-					modelID, strings.TrimSpace(stateErr.Error()),
-				))
-			} else if forgotten {
-				service.publishModelAccess()
-			}
-		}
 		workerReplaced := errors.Is(err, errAccountWorkerReplaced)
 		localWorkerFailure := (workerFailed || workerReplaced) && requestCtx.Err() == nil
 		retryable := retryableGenerateAccountError(requestCtx, err) || localWorkerFailure
@@ -2932,7 +2961,7 @@ func (service *trackedService) generateWithRetry(
 			recoverWorker, _, resetErr = service.recoverWorkerOnce(
 				request.AccountID, workerGeneration, recoveredWorker,
 				needsWAARuntimeRecovery(err, false, workerFailed, workerReplaced),
-				workerFailed || waaRuntimeFailed || permissionDenied,
+				workerFailed || waaRuntimeFailed,
 			)
 			if resetErr != nil {
 				err = errors.Join(err, resetErr)
@@ -2945,8 +2974,26 @@ func (service *trackedService) generateWithRetry(
 				retryable = false
 			}
 		}
-		if fileBound && permissionDenied {
-			copyFiles = true
+		if cooldown, ok := aistudio.QuotaCooldownForError(err, time.Now()); ok {
+			modelAccessScope := modelID
+			scopeLabel := modelID
+			if cooldown.Global {
+				modelAccessScope = ""
+				scopeLabel = "全局"
+			}
+			stateErr := service.pool.MarkCooldownIfGeneration(
+				request.AccountID, modelAccessScope, lease.ModelAccessGeneration(), lease.CheckedAt(),
+				cooldown.Until, cooldown.Reason,
+			)
+			if stateErr != nil {
+				err = errors.Join(err, stateErr)
+				retryable = false
+			} else {
+				service.requests.log(accountLabel, "WARN", fmt.Sprintf(
+					"账号冷却 | 类型=%s | 范围=%s | 恢复=%s",
+					cooldown.Kind, scopeLabel, cooldown.Until.Format(time.RFC3339),
+				))
+			}
 		}
 		releaseErr := lease.Release()
 		lease = nil
@@ -2978,6 +3025,9 @@ func (service *trackedService) generateWithRetry(
 		service.requests.log(accountLabel, "WARN", switchMessage)
 	}
 	if err != nil {
+		if activity != nil {
+			api.SetAccessLogUpstreamBytes(requestCtx, activity.bytes.Load())
+		}
 		api.SetAccessLogError(requestCtx, err)
 		service.requests.finish(request.ID, finalRequestState(err), err)
 		select {
@@ -3128,6 +3178,7 @@ func (service *trackedService) forwardEvents(
 	}
 	defer cancel()
 	defer func() {
+		api.SetAccessLogUpstreamBytes(requestCtx, activity.bytes.Load())
 		api.SetAccessLogGenerationResult(requestCtx, firstContent, contentChars, outputTokens, reasoningTokens)
 		if temporaryCopies != nil {
 			if err := temporaryCopies.Cleanup(); err != nil {
@@ -3218,18 +3269,6 @@ func (service *trackedService) forwardEvents(
 		}
 		if event.Kind == aistudio.EventError {
 			requestErr = event.Err
-			if aistudio.DefinitiveModelAccessFailure(event.Err) {
-				service.forgetPerformance(lease.Account().ID, requestedModelID)
-				forgotten, stateErr := service.pool.ForgetModelAccessVerifiedIfGeneration(
-					lease.Account().ID, requestedModelID, accessGeneration, lease.CheckedAt(),
-				)
-				if stateErr != nil {
-					requestErr = errors.Join(requestErr, stateErr)
-					event.Err = requestErr
-				} else if forgotten {
-					service.publishModelAccess()
-				}
-			}
 			if aistudio.DefinitiveAuthenticationFailure(event.Err) {
 				if stateErr := lease.MarkAuthenticationRequired(event.Err.Error()); stateErr != nil {
 					requestErr = errors.Join(requestErr, stateErr)

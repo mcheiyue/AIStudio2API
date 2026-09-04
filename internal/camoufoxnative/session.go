@@ -33,10 +33,7 @@ func StartSession(ctx context.Context, options Options) (*Session, error) {
 	if options.ExecutablePath == "" {
 		return nil, errors.New("StartSession 需要 ExecutablePath")
 	}
-	ffVersion, err := browserMajor(options.ExecutablePath)
-	if err != nil {
-		return nil, err
-	}
+	ffVersion := camoufoxFirefoxMajor
 	fingerprint, err := loadAccountCamoufoxConfig(options.StorageStatePath, ffVersion, options.Locale, options.Timezone)
 	if err != nil {
 		return nil, err

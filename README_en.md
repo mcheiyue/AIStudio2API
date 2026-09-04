@@ -114,10 +114,10 @@ The first Linux or macOS launch also prepares the matching Camoufox build automa
    Linux and macOS use an isolated Camoufox login:
 
    ```bash
-   ./aistudio2api setup --login --label name@gmail.com
+   ./aistudio2api setup --login
    ```
 
-   Set `--label` to the Google email used for the login. The account is saved under the path configured by `AISTUDIO_AUTH_STATES` in `.env`. Locale and timezone default to the current computer and can be set with `--locale` and `--timezone`.
+   The Google email is read from AI Studio after login. The account is saved under the path configured by `AISTUDIO_AUTH_STATES` in `.env`. Locale and timezone default to the current computer and can be set with `--locale` and `--timezone`.
 
 2. **Start the management UI**:
    - Double-click `start.bat` on Windows
@@ -126,10 +126,9 @@ The first Linux or macOS launch also prepares the matching Camoufox build automa
    - The initial state is `STOPPED`, with Logs open by default
 
 3. **Add another account**:
-   - Open Accounts and click "Add account"
-   - Enter the Google email, proxy, locale, and timezone
-   - Submitting opens an isolated Camoufox window; sign in to Google and enter AI Studio there
-   - The account is saved when login completes
+   - Open Accounts
+   - "Import Chrome accounts" supports selecting multiple local Chrome accounts
+   - "Browser login" opens an isolated Camoufox window and saves the detected email after login
 
 4. **Start the API**:
    - Click "Start service" to start the data plane
@@ -164,7 +163,7 @@ Press `Ctrl+C` in the launch window or close that window to exit the manager. Cl
 
 `start.bat -open-ui=false`: Starts the manager without opening the web UI.
 
-`start.bat setup`: Scans local Chrome accounts. Use `--email` or `--profile` to select a Chrome account. Run `start.bat setup --login --label name@gmail.com` for an isolated login, or `start.bat setup --storage-state <file> --label name@gmail.com` to import a file.
+`start.bat setup`: Scans local Chrome accounts. Use `--email` or `--profile` to select a Chrome account. Run `start.bat setup --login` for an isolated login, or `start.bat setup --storage-state <file>` to import a file.
 
 ## API Usage
 
@@ -400,7 +399,7 @@ Authentication files are stored in `auth/` by default:
 
 The lowercase Google email is the account directory, management UI identity, and log source. `.leases` coordinates account-directory access, while the runtime lease in the user cache allows one WAA Worker per email on the current computer.
 
-Adding an account starts an isolated Camoufox login. `ready` accounts can be edited, disabled, verified, and deleted; `auth_required` accounts can log in again.
+The Accounts page supports Chrome batch import and isolated Camoufox login. `ready` accounts can be edited, disabled, verified, and deleted; `auth_required` accounts can log in again.
 
 ## Documentation
 
@@ -415,7 +414,7 @@ Adding an account starts an isolated Camoufox login. `ready` accounts can be edi
 
 This project uses [Camoufox](https://camoufox.com/) to reduce automation detection. Camoufox is based on Firefox and changes lower-level browser behavior to retain a realistic device fingerprint.
 
-Go handles business requests with a Firefox TLS/HTTP2 profile aligned with Camoufox. Camoufox provides official WAA initialization, fresh proofs, and isolated account login.
+Go handles encoding, scheduling, streaming decode, and public protocols. WAA-protected `GenerateContent` requests are sent by the account's fingerprinted Camoufox page, preserving the native Firefox TLS/HTTP2 stack, headers, cookies, and page fingerprint.
 
 ### Limitations
 
