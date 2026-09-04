@@ -10,11 +10,13 @@
 | 上游 remote | `upstream` = https://github.com/Mag1cFall/AIStudio2API.git |
 | 本 fork remote | `origin` = https://github.com/mcheiyue/AIStudio2API.git |
 | Fork 起点（base） | `4c0f205` — Mag1cFall 全量源码快照（提交信息仅写 `LICENSE`，但树含完整 Mag1cFall 源码：cmd/ internal/ go.mod 等 76 个 .go 文件） |
-| 当前 main tip | `cae9595` |
-| main 提交总数 | 8（1 个 base + 7 个我们引入） |
+| 当前 main tip | `4c8fcf1`（已合并 Mag1cFall `422c753`） |
+| main 提交总数 | 以 Git 历史为准；合并前稳定点为 `bf03a6c` |
 
-> ⚠️ 本仓库内 `upstream/main` 为浅拷贝（本地只取到 tip `4c0f205`）。真正同步前必须先
+> ⚠️ 本仓库内 `upstream/main` 过去曾为浅拷贝。当前已完成一次全量同步；下一次同步前仍必须先
 > `git fetch upstream` 拉取 Mag1cFall 全量历史，否则 merge-base 信息不足。
+
+> 当前同步执行记录、冲突处理和 iBUHub 参考仓库结论统一见 [`merge-plan.md`](./merge-plan.md)。
 
 ## 2. 我们引入的 7 个提交（diff 基线）
 

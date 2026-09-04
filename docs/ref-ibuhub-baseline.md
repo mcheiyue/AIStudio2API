@@ -10,14 +10,15 @@
 |----|----|
 | 上游 | https://github.com/iBUHub/AIStudioToAPI.git |
 | 本地路径 | `D:\OpenCode\2API\AIStudio2api\repo\AIStudioToAPI` |
-| 基线 commit | `3ff4b60`（docs: improve Star History section…） |
-| 克隆状态 | **浅克隆**（本地仅 1 个 tip commit）；同步前需 `git fetch` 拉全量历史 |
+| 基线 commit | `db624c2`（当前参考 tip，v1.3.7） |
+| 对比起点 | `3ff4b60`（此前逆向协议基线） |
+| 克隆状态 | 已完成从 `3ff4b60` 到 `db624c2` 的差异核对；下一次同步前需 `git fetch` |
 | 栈 | Node + Playwright(Firefox/Camoufox)；我们是 Go 移植，非 fork |
 
-> ⚠️ `3ff4b60` 仅是本地克隆到的 tip。本协议逆向所读文件（ProxyServerSystem.js 等）即此 commit 内容；
-> 若 iBUHub 后续改了代理协议，应以 `git fetch` 后的最新 commit 重新比对。
+> 本次核对确认 `ProxyServerSystem.js`、`RequestHandler.js`、`BrowserManager.js` 在上述区间内零改动；
+> 若 iBUHub 后续改了代理协议，应以新 tip 重新比对。
 
-## 2. 我们逆向并移植的关键文件（@ 3ff4b60）
+## 2. 我们逆向并移植的关键文件（协议基线 @ 3ff4b60）
 
 | 文件 | 作用 | 我们移植到的代码 |
 |------|------|------------------|
@@ -81,3 +82,5 @@ git fetch origin && git log --oneline 3ff4b60..origin/main   # 看 ProxyServerSy
 # 重点 diff：src/core/ProxyServerSystem.js / RequestHandler.js / BrowserManager.js
 # 若 proxy_request 字段或握手有变，回到 internal/buildapp/{ws,transport,session}.go 对齐
 ```
+
+本次结果：协议核心文件无差异，因此没有新的 Go 代码需要吸收；iBUHub 的模型目录新增 `gemini-3.8-flash` 不直接复制到主 fork，主 fork 使用 AI Studio 动态模型目录。

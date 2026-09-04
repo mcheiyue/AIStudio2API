@@ -3,6 +3,9 @@
 > 配合 `docs/fork-baseline.md` 使用。目标：拉取 Mag1cFall 新提交并合并到本 fork，
 > 同时保留第 4 节列出的 fork 特有补丁，不引入回归。
 
+> 当前一次同步的实际执行记录和统一入口见 [`merge-plan.md`](./merge-plan.md)。本文保留为历史操作手册；
+> 若与 `merge-plan.md` 的当前状态冲突，以 `merge-plan.md` 为准。
+
 ## 0. 前置确认
 - 工作树干净（`git status` 无未提交改动，临时探针/日志已清）。
 - 已通读 `fork-baseline.md` 第 3 节，知道哪些文件会与上游冲突。
@@ -54,4 +57,4 @@ $env:GOPROXY="https://goproxy.cn,direct"; go build ./cmd/aistudio2api
 ```bash
 git revert <merge-commit>          # 或 git reset --hard <上一个已知好 main tip>
 ```
-已知的「好基线」：`cae9595`（本文件撰写时的 main tip，Build App 已端到端验证通过）。
+已知的合并前稳定点：`bf03a6c`；本次合并后的 main 为 `4c8fcf1`。
