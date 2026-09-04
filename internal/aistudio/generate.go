@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 )
 
@@ -81,6 +82,9 @@ func encodeGenerationConfig(config GenerationConfig, defaults GenerationDefaults
 	default:
 		return nil, fmt.Errorf("reasoning effort 必须是 minimal、low、medium 或 high")
 	}
+	if hasReasoningEffort && defaults.ThinkingLevel {
+		thinkingLevel = closestSupportedThinkingLevel(thinkingLevel, defaults.ThinkingLevels)
+	}
 	if hasReasoningEffort && !defaults.ThinkingLevel {
 		if thinkingBudget == nil || !defaults.ThinkingBudget {
 			return nil, fmt.Errorf("模型不支持 thinking level")
@@ -93,14 +97,15 @@ func encodeGenerationConfig(config GenerationConfig, defaults GenerationDefaults
 		}
 		thinkingBudget = nil
 	}
+	includeMaxOutput := config.SpeechConfig == nil || config.MaxOutputTokens != nil
 	maxOutput := defaults.MaxOutputTokens
 	if config.MaxOutputTokens != nil {
 		maxOutput = *config.MaxOutputTokens
 	}
-	if maxOutput <= 0 {
+	if includeMaxOutput && maxOutput <= 0 {
 		return nil, fmt.Errorf("模型目录缺少有效 output token limit")
 	}
-	if maxOutput > defaults.MaxOutputTokens {
+	if includeMaxOutput && maxOutput > defaults.MaxOutputTokens {
 		return nil, fmt.Errorf("max output tokens %d 超过模型上限 %d", maxOutput, defaults.MaxOutputTokens)
 	}
 	temperature := defaults.Temperature
@@ -165,7 +170,9 @@ func encodeGenerationConfig(config GenerationConfig, defaults GenerationDefaults
 	if len(config.StopSequences) > 0 {
 		wire[1] = append([]string(nil), config.StopSequences...)
 	}
-	wire[3] = maxOutput
+	if includeMaxOutput {
+		wire[3] = maxOutput
+	}
 	if temperature != nil {
 		wire[4] = *temperature
 	}
@@ -211,6 +218,26 @@ func encodeGenerationConfig(config GenerationConfig, defaults GenerationDefaults
 		wire[31] = transcriptionConfig
 	}
 	return wire, nil
+}
+
+var thinkingLevelsByEffort = []int64{4, 1, 2, 3}
+
+func closestSupportedThinkingLevel(requested int64, supported []int64) int64 {
+	requestedRank := slices.Index(thinkingLevelsByEffort, requested)
+	if requestedRank < 0 || len(supported) == 0 || slices.Contains(supported, requested) {
+		return requested
+	}
+	for distance := 1; distance < len(thinkingLevelsByEffort); distance++ {
+		lower := requestedRank - distance
+		if lower >= 0 && slices.Contains(supported, thinkingLevelsByEffort[lower]) {
+			return thinkingLevelsByEffort[lower]
+		}
+		upper := requestedRank + distance
+		if upper < len(thinkingLevelsByEffort) && slices.Contains(supported, thinkingLevelsByEffort[upper]) {
+			return thinkingLevelsByEffort[upper]
+		}
+	}
+	return requested
 }
 
 func encodeResponseModalities(modalities []ResponseModality) ([]int64, error) {
@@ -315,6 +342,26 @@ func applyModelMediaDefaults(config GenerationConfig, model Model) GenerationCon
 	return config
 }
 
+func applySpeechTranscript(contents []Content, model Model, config GenerationConfig) []Content {
+	if !model.Capabilities["speech_route"] || config.SpeechConfig == nil {
+		return contents
+	}
+	result := append([]Content(nil), contents...)
+	for contentIndex, content := range result {
+		parts := append([]Part(nil), content.Parts...)
+		for partIndex, part := range parts {
+			text := strings.TrimSpace(part.Text)
+			if text == "" || strings.HasPrefix(text, "## Transcript:") {
+				continue
+			}
+			parts[partIndex].Text = "## Transcript:\n" + text
+			result[contentIndex].Parts = parts
+			return result
+		}
+	}
+	return result
+}
+
 func observedSafetySettings() []any {
 	settings := make([]any, 0, 4)
 	for category := int64(7); category <= 10; category++ {
@@ -335,6 +382,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	request.Config = applyModelMediaDefaults(request.Config, entry.model)
+	request.Contents = applySpeechTranscript(request.Contents, entry.model, request.Config)
 	runtime := RequestContext{}
 	if c.contextProvider != nil {
 		runtime, err = c.contextProvider.RequestContext(ctx, request.AccountID)
