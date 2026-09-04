@@ -1,0 +1,6 @@
+go test ./... -count=1
+ok  internal/aistudio
+ok  internal/api
+ok  internal/buildapp
+ok  internal/camoufoxnative
+exit 0

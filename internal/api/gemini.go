@@ -220,11 +220,19 @@ func (s *server) handleGeminiAction(w http.ResponseWriter, r *http.Request) {
 		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 		return
 	}
+	isBuild := request.AccountID != "" && s.service.AccountMode(request.AccountID) == aistudio.AccountModeBuildApp
+	if isBuild {
+		switch method {
+		case "countTokens", "embedContent", "batchEmbedContents":
+			s.handleGeminiBuildNative(w, r, rawBody, model, method, request.AccountID)
+			return
+		}
+	}
 	if len(request.Contents) == 0 {
 		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "contents is required")
 		return
 	}
-	if request.AccountID != "" && s.service.AccountMode(request.AccountID) == aistudio.AccountModeBuildApp {
+	if isBuild {
 		switch method {
 		case "generateContent", "streamGenerateContent":
 			s.handleGeminiBuildApp(w, r, rawBody, request.AccountID)
