@@ -84,3 +84,7 @@ git fetch origin && git log --oneline 3ff4b60..origin/main   # 看 ProxyServerSy
 ```
 
 本次结果：协议核心文件无差异，因此没有新的 Go 代码需要吸收；iBUHub 的模型目录新增 `gemini-3.8-flash` 不直接复制到主 fork，主 fork 使用 AI Studio 动态模型目录。
+
+## 7. 能力边界（最终）
+
+Build App 相对 iBUHub / Playground 的完整支持/不支持清单见 [`buildapp-capability-matrix.md`](./buildapp-capability-matrix.md)。要点：iBUHub 的 relay 核心 + Embeddings/上传/countTokens/OpenAI·Anthropic 兼容均已 Go 化并接入；图片/视频/Live/Robotics 不在 Build 范围（前者目录不含且用户排除，后者属独立 Bidi 协议）。

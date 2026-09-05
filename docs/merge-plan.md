@@ -188,3 +188,24 @@
 - 额外兼容修正：`internal/camoufoxnative/session.go` 复用 `camoufoxFirefoxMajor`
 - iBUHub 参考 tip：`db624c2`；协议核心文件无变更，未吸收其代码
 - 验证：`go build ./...`、`go vet ./...`、`go test ./...`、`web/npm run build` 均通过
+
+## 9. 合并后能力补齐（plan `buildapp-capability-parity`）
+
+合并 Mag1cFall `422c753` 后，按 iBUHub 能力基线补齐 Build App 的 HTTP 适配缺口，并建立独立 Build 目录。最终能力边界见 [`buildapp-capability-matrix.md`](./buildapp-capability-matrix.md)。
+
+| commit | 内容 |
+|--------|------|
+| `0b7893a` | relay 二进制安全 `body_b64` + 方法/路径白名单边界 |
+| `d369ccf` | native `countTokens`/`embedContent`/`batchEmbedContents` Build 路由 |
+| `f9d136c` | OpenAI `/v1/embeddings` + 文件上传/引用 Build 路由 |
+| `975646b` | 独立 Build 模型/能力目录（TTL 缓存 + 单飞 + fail-closed）+ 校验接线 + admin DTO |
+| `a7ce6a9` | 兼容端点/工具/Live·Robotics 隔离回归测试 |
+| `ca6ccd6` | 修：runtimeManager 漏转发 SABE/catalog（启动 panic） |
+| `673c418` | 修：trackedService 漏转发 catalog（目录 3ms 秒 502） |
+| `a84f30e` | 修：worker ServeHTTP 对 GET nil body 未防护（panic） |
+| `26cc6ac` | 修：LocateLaunch 假阳性致 Launch! 点击循环提前退出 |
+| `438ecac` | 活体证据：Build 目录 200 + 音频/TTS 200（PCM） |
+
+- 活体验证（2267 自有 app `7f4818a8`，Camoufox headed + SOCKS 7897）：`GET /v1beta/models?account_id=` → 200 真实 4 模型目录；`gemini-2.5-flash-preview-tts:generateContent` → 200 音频 PCM。
+- 图片/视频/Live/Robotics 明确不在 Build 范围（前者目录不含且用户排除，后者属独立 Bidi 协议）。
+- 这些修复是**上游合并引入的运行时回归**（`ca6ccd6`/`673c418`）与既有 Build 代码缺陷（`a84f30e`/`26cc6ac`），单测未覆盖、仅真实启动/请求暴露；后续同步上游后必须跑一次真实 Build 冒烟。
