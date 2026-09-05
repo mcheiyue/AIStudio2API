@@ -28,6 +28,12 @@ type recordingStudio struct {
 	buildModelsErr     error
 	catalogOK          bool
 	catalogFetches     int
+	sabCalls           int
+	sabBody            []byte
+	sabModel           string
+	sabStream          bool
+	sabAccount         string
+	generateCalls      int
 }
 
 func (s *recordingStudio) BuildAppModels(context.Context, string) ([]aistudio.BuildAppModel, error) {
@@ -55,7 +61,10 @@ func (s *recordingStudio) CountTokens(context.Context, aistudio.TokenCountReques
 }
 
 func (s *recordingStudio) Generate(context.Context, aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
-	ch := make(chan aistudio.Event)
+	s.generateCalls++
+	ch := make(chan aistudio.Event, 2)
+	ch <- aistudio.Event{Kind: aistudio.EventText, Text: "ok"}
+	ch <- aistudio.Event{Kind: aistudio.EventFinish, FinishReason: "STOP"}
 	close(ch)
 	return ch, nil
 }
@@ -82,8 +91,15 @@ func (s *recordingStudio) ServeBuildApp(_ context.Context, rw http.ResponseWrite
 	return nil
 }
 
-func (s *recordingStudio) ServeBuildAppEvents(context.Context, []byte, string, bool, string) (<-chan aistudio.Event, error) {
-	ch := make(chan aistudio.Event)
+func (s *recordingStudio) ServeBuildAppEvents(_ context.Context, body []byte, model string, stream bool, accountID string) (<-chan aistudio.Event, error) {
+	s.sabCalls++
+	s.sabBody = body
+	s.sabModel = model
+	s.sabStream = stream
+	s.sabAccount = accountID
+	ch := make(chan aistudio.Event, 2)
+	ch <- aistudio.Event{Kind: aistudio.EventText, Text: "ok"}
+	ch <- aistudio.Event{Kind: aistudio.EventFinish, FinishReason: "STOP"}
 	close(ch)
 	return ch, nil
 }

@@ -1,0 +1,12 @@
+?   	github.com/Mag1cFall/AIStudio2API/cmd/aistudio2api	[no test files]
+?   	github.com/Mag1cFall/AIStudio2API/cmd/buildapptest	[no test files]
+ok  	github.com/Mag1cFall/AIStudio2API/internal/aistudio	0.168s
+ok  	github.com/Mag1cFall/AIStudio2API/internal/api	0.241s
+?   	github.com/Mag1cFall/AIStudio2API/internal/app	[no test files]
+ok  	github.com/Mag1cFall/AIStudio2API/internal/buildapp	0.041s
+ok  	github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative	0.033s
+?   	github.com/Mag1cFall/AIStudio2API/internal/chromeauth	[no test files]
+?   	github.com/Mag1cFall/AIStudio2API/internal/config	[no test files]
+?   	github.com/Mag1cFall/AIStudio2API/internal/setup	[no test files]
+?   	github.com/Mag1cFall/AIStudio2API/internal/webui	[no test files]
+?   	github.com/Mag1cFall/AIStudio2API/web/node_modules/flatted/golang/pkg/flatted	[no test files]
