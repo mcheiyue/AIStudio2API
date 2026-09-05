@@ -10,7 +10,9 @@ func (s *Session) LocateLaunch(ctx context.Context) (LaunchHit, error) {
 	if err != nil {
 		return LaunchHit{}, fmt.Errorf("定位 Launch!: %w", err)
 	}
-	return parseLaunchHitState(raw)
+	// 必须用带校验的 ParseLaunchHit：Launch! 尚未渲染时 JS 返回 {"found":false}（零矩形），
+	// 若用宽松解析会把 (0,0) 当成有效命中，导致点击落在窗口原点并误报成功、点击循环提前退出。
+	return ParseLaunchHit(raw)
 }
 
 func (s *Session) LocateLaunchNode(ctx context.Context) (string, error) {

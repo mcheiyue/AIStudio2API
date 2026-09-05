@@ -116,14 +116,3 @@ func ParseLaunchHit(raw string) (LaunchHit, error) {
 	}
 	return hit, nil
 }
-
-func parseLaunchHitState(raw string) (LaunchHit, error) {
-	if strings.TrimSpace(raw) == "" {
-		return LaunchHit{}, errors.New("Launch! 定位结果为空")
-	}
-	var hit LaunchHit
-	if err := json.Unmarshal([]byte(raw), &hit); err != nil {
-		return LaunchHit{}, fmt.Errorf("解析 Launch! 状态: %w", err)
-	}
-	return hit, nil
-}
