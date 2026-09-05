@@ -228,6 +228,38 @@ func (manager *runtimeManager) ServeBuildApp(ctx context.Context, rw http.Respon
 	return manager.current.service.ServeBuildApp(ctx, rw, r, accountID)
 }
 
+// ServeBuildAppEvents 委派 Build App 事件流（OpenAI Chat/Responses/Anthropic buildapp 分支）。
+// 上游合并 runtime 重写时曾丢失本转发，导致 NewHandler 硬断言 panic；补回。
+func (manager *runtimeManager) ServeBuildAppEvents(ctx context.Context, body []byte, model string, stream bool, accountID string) (<-chan aistudio.Event, error) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	service, ok := manager.current.service.(aistudio.BuildAppService)
+	if !ok {
+		return nil, fmt.Errorf("buildapp event service 不可用")
+	}
+	return service.ServeBuildAppEvents(ctx, body, model, stream, accountID)
+}
+
+// BuildAppModels 委派 Build 独立目录（可选接口，fail-closed）。
+func (manager *runtimeManager) BuildAppModels(ctx context.Context, accountID string) ([]aistudio.BuildAppModel, error) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	if catalog, ok := manager.current.service.(aistudio.BuildAppCatalog); ok {
+		return catalog.BuildAppModels(ctx, accountID)
+	}
+	return nil, aistudio.ErrBuildAppCatalogUnavailable
+}
+
+// BuildAppCatalogInfo 委派 Build 目录摘要。
+func (manager *runtimeManager) BuildAppCatalogInfo(accountID string) aistudio.BuildAppCatalogInfo {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	if catalog, ok := manager.current.service.(aistudio.BuildAppCatalog); ok {
+		return catalog.BuildAppCatalogInfo(accountID)
+	}
+	return aistudio.BuildAppCatalogInfo{}
+}
+
 // GenerateVideo 由当前生成服务创建视频任务
 func (manager *runtimeManager) GenerateVideo(ctx context.Context, request aistudio.VideoRequest) (aistudio.VideoOperation, error) {
 	manager.mu.RLock()
