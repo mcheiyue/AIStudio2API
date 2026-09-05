@@ -1639,6 +1639,24 @@ func (service *trackedService) ServeBuildAppEvents(ctx context.Context, body []b
 	return buildApp.ServeBuildAppEvents(ctx, body, model, stream, accountID)
 }
 
+// BuildAppModels 委派 Build 独立模型目录，不回落到 Playground 目录。
+func (service *trackedService) BuildAppModels(ctx context.Context, accountID string) ([]aistudio.BuildAppModel, error) {
+	catalog, ok := service.service.(aistudio.BuildAppCatalog)
+	if !ok {
+		return nil, aistudio.ErrBuildAppCatalogUnavailable
+	}
+	return catalog.BuildAppModels(ctx, accountID)
+}
+
+// BuildAppCatalogInfo 委派 Build 目录缓存摘要。
+func (service *trackedService) BuildAppCatalogInfo(accountID string) aistudio.BuildAppCatalogInfo {
+	catalog, ok := service.service.(aistudio.BuildAppCatalog)
+	if !ok {
+		return aistudio.BuildAppCatalogInfo{}
+	}
+	return catalog.BuildAppCatalogInfo(accountID)
+}
+
 func (service *trackedService) Running() bool {
 	return service.state.Load() == serviceRunning
 }
