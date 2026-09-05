@@ -1,0 +1,20 @@
+2026/09/05 14:23:31 [buildapp] WS server listening on ws://127.0.0.1:9998
+2026/09/05 14:23:37 [buildapp] authIndex responder + click capture injected
+2026/09/05 14:23:39 [buildapp] navigated to applet https://aistudio.google.com/apps/7f4818a8-8bbd-4e0b-92fd-9b465fdd4c36
+2026/09/05 14:23:42 [buildapp] onboard click: Skip
+2026/09/05 14:23:44 [buildapp] onboard click: close
+2026/09/05 14:23:53 [buildapp] applet connected authIndex=0
+2026/09/05 14:23:53 [buildapp] worker applet connected authIndex=0
+2026/09/05 14:23:55 [buildapp] applet WS ready authIndex=0
+2026/09/05 14:23:55 [buildapp] sending proxy_request bytes: {"event_type":"proxy_request","request_id":"req_1788589435550174100_70zg2o","request_attempt_id":"req_1788589435550174100_70zg2o_attempt_1_h33u","method":"GET","path":"/v1beta/models","query_params":{},"headers":{"Content-Length":"0"},"body":"","streaming_mode":"fake","is_generative":false,"response_transform":null}
+[osclick] click screen=(1130,521) hwnd=119c1ea6 fg=119c1ea6 origin=(12,4)
+2026/09/05 14:23:56 [buildapp] auto-click Launch! OK（等待 applet 回包）
+2026/09/05 14:24:20 [buildapp] RAW <- applet (174 bytes): {"event_type":"response_headers","headers":{},"request_attempt_id":"req_1788589435550174100_70zg2o_attempt_1_h33u","request_id":"req_1788589435550174100_70zg2o","status":200}
+2026/09/05 14:24:20 [buildapp] RAW <- applet (2010 bytes): {"data":"{\"models\":[{\"name\":\"models/gemini-2.5-flash\",\"version\":\"001\",\"displayName\":\"Gemini 2.5 Flash\",\"description\":\"Stable version of Gemini 2.5 Flash, our mid-size multimodal model that supports up to 1 million tokens, released in June of 2025.\",\"inputTokenLimit\":1048576,\"out
+2026/09/05 14:24:20 [buildapp] RAW <- applet (144 bytes): {"event_type":"stream_close","request_attempt_id":"req_1788589435550174100_70zg2o_attempt_1_h33u","request_id":"req_1788589435550174100_70zg2o"}
+2026/09/05 14:24:20 INFO 200 | 49.943s | GET "/v1beta/models" source=request
+2026/09/05 14:27:58 [buildapp] sending proxy_request bytes: {"event_type":"proxy_request","request_id":"req_1788589678387657100_v2rwni","request_attempt_id":"req_1788589678387657100_v2rwni_attempt_1_v5x7","method":"POST","path":"/v1beta/models/gemini-2.5-flash-preview-tts:generateContent","query_params":{},"headers":{"Accept":"*/*","Authorization":"Bearer local","Content-Length":"205","Content-Type":"application/json","User-Agent":"curl/8.13.0"},"body":"{\"contents\":[{\"parts\":[{\"text\":\"Say in one short sentence: hello there.\"}]}],\"generationConfig\":{\"responseModalities\":[\"AUDIO\"],\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Kore\"}}}}}","streaming_mode":"fake","is_generative":true,"response_transform":null}
+2026/09/05 14:28:03 [buildapp] RAW <- applet (174 bytes): {"event_type":"response_headers","headers":{},"request_attempt_id":"req_1788589678387657100_v2rwni_attempt_1_v5x7","request_id":"req_1788589678387657100_v2rwni","status":200}
+2026/09/05 14:28:03 [buildapp] RAW <- applet (70625 bytes): {"data":"{\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"audio/L16;codec\\u003dpcm;rate\\u003d24000\",\"data\":\"DgARABQAEQAXABcAEwATABIAEgATABAAEwARABAAFAARAAkADQAQABIADgAOABUAEQAOABAADgAKAAYABgAKAAgADAAJAAkADwAMAAgAAwAGAAQABQAEAAMAAwADAAcABQADAAYAAwAAAAMAAQD//wcAAgD//wIA/
+2026/09/05 14:28:03 [buildapp] RAW <- applet (144 bytes): {"event_type":"stream_close","request_attempt_id":"req_1788589678387657100_v2rwni_attempt_1_v5x7","request_id":"req_1788589678387657100_v2rwni"}
+2026/09/05 14:28:03 INFO 200 | 5.311s | POST "/v1beta/models/gemini-2.5-flash-preview-tts:generateContent" source=request
