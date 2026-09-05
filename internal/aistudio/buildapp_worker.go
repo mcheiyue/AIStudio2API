@@ -92,10 +92,14 @@ func (w *BuildAppWorker) State() string {
 // ServeHTTP 把原始 HTTP 请求经 applet 中继到 generativelanguage。
 // 请求期持续用 OS 级真实鼠标点击 Launch!（放行 applet 的 bootstrapChannel）。
 func (w *BuildAppWorker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, buildapp.MaxRelayBodyBytes+1))
-	if err != nil {
-		http.Error(rw, "read body: "+err.Error(), http.StatusBadRequest)
-		return
+	var body []byte
+	if r.Body != nil {
+		var err error
+		body, err = io.ReadAll(io.LimitReader(r.Body, buildapp.MaxRelayBodyBytes+1))
+		if err != nil {
+			http.Error(rw, "read body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	reqID, ch, err := w.transport.SubmitRequest(r, body)
 	if err != nil {
