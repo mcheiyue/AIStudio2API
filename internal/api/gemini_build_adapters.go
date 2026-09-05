@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
@@ -61,6 +62,10 @@ func (s *server) handleGeminiBuildNative(w http.ResponseWriter, r *http.Request,
 		}
 		out = converted
 	}
+	writeCapturedResponse(w, rec, out)
+}
+
+func writeCapturedResponse(w http.ResponseWriter, rec *captureWriter, body []byte) {
 	for k, vs := range rec.header {
 		if strings.EqualFold(k, "Content-Length") {
 			continue
@@ -69,13 +74,13 @@ func (s *server) handleGeminiBuildNative(w http.ResponseWriter, r *http.Request,
 			w.Header().Add(k, v)
 		}
 	}
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	code := rec.code
 	if code == 0 {
 		code = http.StatusOK
 	}
 	w.WriteHeader(code)
-	_, _ = w.Write(out)
+	_, _ = w.Write(body)
 }
 
 func prepareGeminiBuildNative(raw []byte, model, method string) ([]byte, string, bool, error) {
@@ -143,4 +148,129 @@ func requireJSONArray(raw []byte, field string) error {
 		return fmt.Errorf("%s is required", field)
 	}
 	return nil
+}
+
+// handleOpenAIEmbeddings 服务 POST /v1/embeddings：仅 buildapp 账号可用。
+// OpenAI input 转 native batchEmbedContents（每条 input 一个 request），响应映射回 OpenAI list 形状。
+func (s *server) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Model     string          `json:"model"`
+		Input     json.RawMessage `json:"input"`
+		AccountID string          `json:"account_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "parse embeddings body: "+err.Error())
+		return
+	}
+	model := strings.TrimPrefix(strings.TrimSpace(request.Model), "models/")
+	if model == "" || len(request.Input) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "model and input are required")
+		return
+	}
+	inputs, err := decodeEmbeddingInputs(request.Input)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if request.AccountID == "" {
+		request.AccountID = strings.TrimSpace(r.URL.Query().Get("account_id"))
+	}
+	if request.AccountID == "" || s.service.AccountMode(request.AccountID) != aistudio.AccountModeBuildApp {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "embeddings require a buildapp account_id")
+		return
+	}
+	body, err := buildOpenAIBatchEmbedBody(model, inputs)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	proxy := r.Clone(r.Context())
+	proxy.URL.Path = "/v1beta/models/" + model + ":batchEmbedContents"
+	proxy.Body = io.NopCloser(bytes.NewReader(body))
+	proxy.ContentLength = int64(len(body))
+	proxy.Header.Set("Content-Type", "application/json")
+
+	rec := &captureWriter{header: make(http.Header)}
+	if err := s.service.ServeBuildApp(r.Context(), rec, proxy, request.AccountID); err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "buildapp_error", err.Error())
+		return
+	}
+	if rec.code >= 400 {
+		writeOpenAIError(w, http.StatusBadGateway, "buildapp_error", "upstream embeddings failed with status "+strconv.Itoa(rec.code))
+		return
+	}
+	data, err := mapBatchEmbedToOpenAI(rec.buf.Bytes(), request.Model)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "buildapp_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
+}
+
+// decodeEmbeddingInputs 接受 string 或 string 数组两种 OpenAI input 形状。
+func decodeEmbeddingInputs(raw json.RawMessage) ([]string, error) {
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		if strings.TrimSpace(single) == "" {
+			return nil, fmt.Errorf("input must not be empty")
+		}
+		return []string{single}, nil
+	}
+	var many []string
+	if err := json.Unmarshal(raw, &many); err != nil {
+		return nil, fmt.Errorf("input must be a string or string array")
+	}
+	if len(many) == 0 {
+		return nil, fmt.Errorf("input must not be empty")
+	}
+	for _, item := range many {
+		if strings.TrimSpace(item) == "" {
+			return nil, fmt.Errorf("input must not contain empty entries")
+		}
+	}
+	return many, nil
+}
+
+// buildOpenAIBatchEmbedBody 构造 native batchEmbedContents 请求体。
+func buildOpenAIBatchEmbedBody(model string, inputs []string) ([]byte, error) {
+	requests := make([]map[string]any, 0, len(inputs))
+	for _, input := range inputs {
+		requests = append(requests, map[string]any{
+			"model":   "models/" + model,
+			"content": map[string]any{"parts": []map[string]any{{"text": input}}},
+		})
+	}
+	encoded, err := json.Marshal(map[string]any{"requests": requests})
+	if err != nil {
+		return nil, fmt.Errorf("encode batchEmbedContents body: %w", err)
+	}
+	return encoded, nil
+}
+
+// mapBatchEmbedToOpenAI 把 native batchEmbedContents 响应映射为 OpenAI embeddings 形状。
+func mapBatchEmbedToOpenAI(raw []byte, model string) (map[string]any, error) {
+	var batch struct {
+		Embeddings []json.RawMessage `json:"embeddings"`
+	}
+	if err := json.Unmarshal(raw, &batch); err != nil {
+		return nil, fmt.Errorf("decode batchEmbedContents response: %w", err)
+	}
+	if len(batch.Embeddings) == 0 {
+		return nil, fmt.Errorf("batchEmbedContents response did not contain embeddings")
+	}
+	data := make([]map[string]any, 0, len(batch.Embeddings))
+	for index, item := range batch.Embeddings {
+		var values struct {
+			Values []float64 `json:"values"`
+		}
+		if err := json.Unmarshal(item, &values); err != nil {
+			return nil, fmt.Errorf("decode embedding[%d]: %w", index, err)
+		}
+		data = append(data, map[string]any{
+			"object":    "embedding",
+			"embedding": values.Values,
+			"index":     index,
+		})
+	}
+	return map[string]any{"object": "list", "data": data, "model": model}, nil
 }

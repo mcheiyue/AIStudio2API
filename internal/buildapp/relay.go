@@ -62,6 +62,16 @@ func RelayHTTPStatus(err error) int {
 	return http.StatusBadGateway
 }
 
+// EncodeProxyRequest 把 HTTP 请求编成 applet proxy_request，供测试与 API 层复用。
+func EncodeProxyRequest(r *http.Request, body []byte) (ProxyRequest, error) {
+	return newProxyRequest(r, body, "")
+}
+
+// DecodeProxyPayload 还原 proxy_request 的原始字节（JSON body 或 body_b64）。
+func DecodeProxyPayload(pr ProxyRequest) ([]byte, error) {
+	return relayPayloadBytes(pr)
+}
+
 func newProxyRequest(r *http.Request, body []byte, apiKey string) (ProxyRequest, error) {
 	if len(body) > MaxRelayBodyBytes {
 		return ProxyRequest{}, newRelayError(ErrBodyTooLarge, strconv.Itoa(MaxRelayBodyBytes))

@@ -13,15 +13,17 @@ import (
 )
 
 type recordingStudio struct {
-	mode           string
-	countCalls     int
-	buildCalls     int
-	buildPaths     []string
-	buildBodies    [][]byte
-	buildAccount   string
-	countTokensOut aistudio.TokenCount
-	buildStatus    int
-	buildResponse  []byte
+	mode               string
+	countCalls         int
+	buildCalls         int
+	buildPaths         []string
+	buildBodies        [][]byte
+	buildAccount       string
+	countTokensOut     aistudio.TokenCount
+	buildStatus        int
+	buildResponse      []byte
+	buildContentLength int64
+	buildContentType   string
 }
 
 func (s *recordingStudio) Models(context.Context) ([]aistudio.Model, error) {
@@ -50,6 +52,8 @@ func (s *recordingStudio) ServeBuildApp(_ context.Context, rw http.ResponseWrite
 	body, _ := io.ReadAll(r.Body)
 	s.buildPaths = append(s.buildPaths, r.URL.Path)
 	s.buildBodies = append(s.buildBodies, body)
+	s.buildContentLength = r.ContentLength
+	s.buildContentType = r.Header.Get("Content-Type")
 	status := s.buildStatus
 	if status == 0 {
 		status = http.StatusOK
@@ -254,5 +258,120 @@ func TestHandleGeminiAction_unknownAccount_keepsPlaygroundCountTokens(t *testing
 	}
 	if studio.countCalls != 1 || studio.buildCalls != 0 {
 		t.Fatalf("count=%d build=%d", studio.countCalls, studio.buildCalls)
+	}
+}
+
+func embeddingsHandler(studio *recordingStudio) http.Handler {
+	s := &server{service: studio, buildApp: studio}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/embeddings", s.handleOpenAIEmbeddings)
+	return mux
+}
+
+func TestHandleOpenAIEmbeddings_buildAccount_mapsBatchToOpenAIList(t *testing.T) {
+	studio := &recordingStudio{
+		mode:          aistudio.AccountModeBuildApp,
+		buildResponse: []byte(`{"embeddings":[{"values":[0.1,0.2]},{"values":[0.3,0.4]}]}`),
+	}
+	r := httptest.NewRequest(http.MethodPost, "/v1/embeddings",
+		strings.NewReader(`{"model":"text-embedding-004","input":["a","b"],"account_id":"acc-build"}`))
+	r.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	embeddingsHandler(studio).ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if studio.buildCalls != 1 || studio.buildAccount != "acc-build" {
+		t.Fatalf("calls=%d account=%q", studio.buildCalls, studio.buildAccount)
+	}
+	if studio.buildPaths[0] != "/v1beta/models/text-embedding-004:batchEmbedContents" {
+		t.Fatalf("path = %q", studio.buildPaths[0])
+	}
+	var sent struct {
+		Requests []map[string]any `json:"requests"`
+	}
+	if err := json.Unmarshal(studio.buildBodies[0], &sent); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent.Requests) != 2 || sent.Requests[0]["model"] != "models/text-embedding-004" {
+		t.Fatalf("batch body = %s", studio.buildBodies[0])
+	}
+	var out struct {
+		Object string `json:"object"`
+		Model  string `json:"model"`
+		Data   []struct {
+			Object    string    `json:"object"`
+			Embedding []float64 `json:"embedding"`
+			Index     int       `json:"index"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Object != "list" || out.Model != "text-embedding-004" || len(out.Data) != 2 {
+		t.Fatalf("openai body = %s", rec.Body.String())
+	}
+	if out.Data[1].Index != 1 || out.Data[1].Embedding[0] != 0.3 {
+		t.Fatalf("data[1] = %#v", out.Data[1])
+	}
+}
+
+func TestHandleOpenAIEmbeddings_nonBuildAccount_rejectedWithoutWorker(t *testing.T) {
+	tests := []struct {
+		name  string
+		mode  string
+		query string
+		body  string
+	}{
+		{"playground account", aistudio.AccountModePlayground, "", `{"model":"m","input":"x","account_id":"acc-pg"}`},
+		{"missing account", aistudio.AccountModeBuildApp, "", `{"model":"m","input":"x"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			studio := &recordingStudio{mode: tt.mode}
+			r := httptest.NewRequest(http.MethodPost, "/v1/embeddings"+tt.query, strings.NewReader(tt.body))
+			r.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			embeddingsHandler(studio).ServeHTTP(rec, r)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "buildapp account_id") {
+				t.Fatalf("body = %s", rec.Body.String())
+			}
+			if studio.buildCalls != 0 {
+				t.Fatalf("worker started: %d", studio.buildCalls)
+			}
+		})
+	}
+}
+
+func TestHandleOpenAIEmbeddings_rejectsBadInputWithoutWorker(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"missing model", `{"input":"x","account_id":"acc-build"}`, "model and input are required"},
+		{"empty input array", `{"model":"m","input":[],"account_id":"acc-build"}`, "input must not be empty"},
+		{"bad input shape", `{"model":"m","input":123,"account_id":"acc-build"}`, "input must be a string or string array"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			studio := &recordingStudio{mode: aistudio.AccountModeBuildApp}
+			r := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(tt.body))
+			r.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			embeddingsHandler(studio).ServeHTTP(rec, r)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.want) {
+				t.Fatalf("body = %s want %q", rec.Body.String(), tt.want)
+			}
+			if studio.buildCalls != 0 {
+				t.Fatalf("worker started: %d", studio.buildCalls)
+			}
+		})
 	}
 }

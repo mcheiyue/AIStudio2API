@@ -207,3 +207,17 @@ func TestBuildAppBodyFromGenerateRequest_FunctionCall(t *testing.T) {
 		t.Error("missing functionResponse in user content")
 	}
 }
+
+func TestPrepareBuildAppGeminiBody_preservesFileDataURI(t *testing.T) {
+	raw := []byte(`{"contents":[{"parts":[{"fileData":{"fileUri":"files/abc","mimeType":"text/plain"}}]}],"accountID":"acc-build"}`)
+	body, err := prepareBuildAppGeminiBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "accountID") {
+		t.Fatal("accountID leaked")
+	}
+	if !strings.Contains(string(body), `"fileUri":"files/abc"`) {
+		t.Fatalf("fileUri not preserved: %s", body)
+	}
+}

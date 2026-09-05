@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,8 +12,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
+	"github.com/Mag1cFall/AIStudio2API/internal/buildapp"
 )
 
 const (
@@ -57,26 +60,33 @@ type openAIFileObject struct {
 }
 
 func (s *server) handleOpenAIFileUpload(w http.ResponseWriter, r *http.Request) {
-	service, ok := s.service.(aistudio.FileService)
-	if !ok {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "file upload is unavailable")
-		return
-	}
 	r.Body = http.MaxBytesReader(w, r.Body, openAIFileMaxBytes+openAIFileRequestOverhead)
 	reader, err := r.MultipartReader()
 	if err != nil {
 		writeOpenAIFileParseError(w, err)
 		return
 	}
-	purpose, file, filename, contentType, err := readOpenAIFileParts(reader)
+	purpose, accountID, file, filename, contentType, err := readOpenAIFileParts(reader)
 	if err != nil {
 		writeOpenAIFileParseError(w, err)
 		return
 	}
 	defer file.Close()
+	if accountID == "" {
+		accountID = strings.TrimSpace(r.URL.Query().Get("account_id"))
+	}
 	mimeType, stream, err := multipartStreamMIME(file, contentType)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if accountID != "" && s.service.AccountMode(accountID) == aistudio.AccountModeBuildApp {
+		s.handleOpenAIBuildFileUpload(w, r, reader, accountID, purpose, filename, mimeType, stream)
+		return
+	}
+	service, ok := s.service.(aistudio.FileService)
+	if !ok {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "file upload is unavailable")
 		return
 	}
 	request := aistudio.UploadRequest{
@@ -111,31 +121,39 @@ func (s *server) handleOpenAIFileUpload(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, openAIFileResponse(metadata))
 }
 
-func readOpenAIFileParts(reader *multipart.Reader) (string, *multipart.Part, string, string, error) {
+func readOpenAIFileParts(reader *multipart.Reader) (string, string, *multipart.Part, string, string, error) {
 	purpose := ""
+	accountID := ""
 	for {
 		part, err := reader.NextPart()
 		if errors.Is(err, io.EOF) {
-			return "", nil, "", "", errors.New("file is required")
+			return "", "", nil, "", "", errors.New("file is required")
 		}
 		if err != nil {
-			return "", nil, "", "", err
+			return "", "", nil, "", "", err
 		}
 		if part.FormName() == "file" && part.FileName() != "" {
 			filename := strings.TrimSpace(part.FileName())
 			if filename == "" {
 				_ = part.Close()
-				return "", nil, "", "", errors.New("filename is required")
+				return "", "", nil, "", "", errors.New("filename is required")
 			}
-			return purpose, part, filename, part.Header.Get("Content-Type"), nil
+			return purpose, accountID, part, filename, part.Header.Get("Content-Type"), nil
 		}
 		value, err := readOpenAIFileField(part)
 		_ = part.Close()
 		if err != nil {
-			return "", nil, "", "", err
+			return "", "", nil, "", "", err
 		}
-		if part.FormName() == "purpose" && purpose == "" {
-			purpose = strings.TrimSpace(value)
+		switch part.FormName() {
+		case "purpose":
+			if purpose == "" {
+				purpose = strings.TrimSpace(value)
+			}
+		case "account_id":
+			if accountID == "" {
+				accountID = strings.TrimSpace(value)
+			}
 		}
 	}
 }
@@ -384,4 +402,90 @@ func writeOpenAIFileParseError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+}
+
+// buildappUploadBoundary 是 Build 上传 multipart/related 的固定边界；每次请求独立缓存体，无并发复用。
+const buildappUploadBoundary = "aistudio2api-build-upload"
+
+// handleOpenAIBuildFileUpload 把 buildapp 账号的文件上传中继到 native /upload/v1beta/files。
+// 文件字节经 multipart/related 第一段 JSON 元数据 + 第二段媒体体发送；上限为 relay 的 32MiB。
+func (s *server) handleOpenAIBuildFileUpload(
+	w http.ResponseWriter,
+	r *http.Request,
+	reader *multipart.Reader,
+	accountID, purpose, filename, mimeType string,
+	stream io.Reader,
+) {
+	data, err := io.ReadAll(io.LimitReader(stream, buildapp.MaxRelayBodyBytes+1))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read upload body: "+err.Error())
+		return
+	}
+	if int64(len(data)) > buildapp.MaxRelayBodyBytes {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "file_too_large", "buildapp upload exceeds 32 MB relay bound")
+		return
+	}
+	meta, err := json.Marshal(map[string]any{
+		"file": map[string]string{"display_name": filename, "mimeType": mimeType},
+	})
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "encode upload metadata: "+err.Error())
+		return
+	}
+	var body bytes.Buffer
+	body.WriteString("--" + buildappUploadBoundary + "\r\nContent-Type: application/json\r\n\r\n")
+	body.Write(meta)
+	body.WriteString("\r\n--" + buildappUploadBoundary + "\r\nContent-Type: " + mimeType + "\r\n\r\n")
+	body.Write(data)
+	body.WriteString("\r\n--" + buildappUploadBoundary + "--\r\n")
+
+	proxy := r.Clone(r.Context())
+	proxy.URL.Path = "/upload/v1beta/files"
+	proxy.URL.RawQuery = "uploadType=multipart"
+	proxy.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+	proxy.ContentLength = int64(body.Len())
+	proxy.Header.Set("Content-Type", "multipart/related; boundary="+buildappUploadBoundary)
+
+	rec := &captureWriter{header: make(http.Header)}
+	if err := s.service.ServeBuildApp(r.Context(), rec, proxy, accountID); err != nil {
+		writeOpenAIError(w, buildapp.RelayHTTPStatus(err), "buildapp_error", err.Error())
+		return
+	}
+	if rec.code >= 400 {
+		writeOpenAIError(w, http.StatusBadGateway, "buildapp_error", "upstream upload failed with status "+strconv.Itoa(rec.code))
+		return
+	}
+	var uploaded struct {
+		File struct {
+			Name        string `json:"name"`
+			URI         string `json:"uri"`
+			DisplayName string `json:"displayName"`
+			SizeBytes   string `json:"sizeBytes"`
+			CreateTime  string `json:"createTime"`
+		} `json:"file"`
+	}
+	if err := json.Unmarshal(rec.buf.Bytes(), &uploaded); err != nil || (uploaded.File.Name == "" && uploaded.File.URI == "") {
+		writeOpenAIError(w, http.StatusBadGateway, "buildapp_error", "unexpected buildapp upload response")
+		return
+	}
+	fileID := uploaded.File.Name
+	if fileID == "" {
+		fileID = uploaded.File.URI
+	}
+	createdAt := time.Now().Unix()
+	if parsed, parseErr := time.Parse(time.RFC3339, uploaded.File.CreateTime); parseErr == nil {
+		createdAt = parsed.Unix()
+	}
+	size := int64(len(data))
+	if parsed, parseErr := strconv.ParseInt(uploaded.File.SizeBytes, 10, 64); parseErr == nil && parsed > 0 {
+		size = parsed
+	}
+	displayName := uploaded.File.DisplayName
+	if displayName == "" {
+		displayName = filename
+	}
+	writeJSON(w, http.StatusOK, openAIFileObject{
+		ID: fileID, Object: "file", Bytes: size, CreatedAt: createdAt,
+		Filename: displayName, Purpose: purpose, Status: "processed",
+	})
 }
