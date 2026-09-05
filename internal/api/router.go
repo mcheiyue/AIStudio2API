@@ -18,6 +18,7 @@ type Config struct {
 type server struct {
 	service        aistudio.Service
 	buildApp       aistudio.BuildAppService
+	buildCatalog   aistudio.BuildAppCatalog
 	config         Config
 	responseStates *responseStateStore
 }
@@ -27,6 +28,9 @@ var idSequence atomic.Uint64
 // NewHandler 创建公开 API 路由
 func NewHandler(service aistudio.Service, config Config) http.Handler {
 	s := &server{service: service, buildApp: service.(aistudio.BuildAppService), config: config, responseStates: newResponseStateStore()}
+	if catalog, ok := service.(aistudio.BuildAppCatalog); ok {
+		s.buildCatalog = catalog
+	}
 	public := http.NewServeMux()
 	public.HandleFunc("GET /v1/models", s.handleOpenAIModels)
 	public.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)

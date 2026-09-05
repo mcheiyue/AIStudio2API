@@ -76,6 +76,17 @@ type openAITool struct {
 var assistantImagePattern = regexp.MustCompile(`!\[[^\]]*\]\((data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+)\)`)
 
 func (s *server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
+	if buildModels, isBuild, err := s.buildAppCatalogForRequest(r); err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "buildapp_error", err.Error())
+		return
+	} else if isBuild {
+		data := make([]map[string]any, 0, len(buildModels))
+		for _, model := range buildModels {
+			data = append(data, openAIBuildModelObject(model))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+		return
+	}
 	models, err := s.service.Models(r.Context())
 	if err != nil {
 		if shouldWriteRequestError(r, err) {

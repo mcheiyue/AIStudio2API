@@ -24,6 +24,22 @@ type recordingStudio struct {
 	buildResponse      []byte
 	buildContentLength int64
 	buildContentType   string
+	buildModels        []aistudio.BuildAppModel // nil 且 catalogOK=false 时不实现目录接口
+	buildModelsErr     error
+	catalogOK          bool
+	catalogFetches     int
+}
+
+func (s *recordingStudio) BuildAppModels(context.Context, string) ([]aistudio.BuildAppModel, error) {
+	s.catalogFetches++
+	return s.buildModels, s.buildModelsErr
+}
+
+func (s *recordingStudio) BuildAppCatalogInfo(string) aistudio.BuildAppCatalogInfo {
+	if s.buildModelsErr != nil {
+		return aistudio.BuildAppCatalogInfo{Err: s.buildModelsErr}
+	}
+	return aistudio.BuildAppCatalogInfo{Size: len(s.buildModels)}
 }
 
 func (s *recordingStudio) Models(context.Context) ([]aistudio.Model, error) {
@@ -74,8 +90,13 @@ func (s *recordingStudio) ServeBuildAppEvents(context.Context, []byte, string, b
 
 func geminiHandler(studio *recordingStudio) http.Handler {
 	s := &server{service: studio, buildApp: studio}
+	if studio.catalogOK {
+		s.buildCatalog = studio
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1beta/models/{action}", s.handleGeminiAction)
+	mux.HandleFunc("GET /v1beta/models", s.handleGeminiModels)
+	mux.HandleFunc("GET /v1beta/models/{model}", s.handleGeminiModel)
 	return mux
 }
 
@@ -263,9 +284,134 @@ func TestHandleGeminiAction_unknownAccount_keepsPlaygroundCountTokens(t *testing
 
 func embeddingsHandler(studio *recordingStudio) http.Handler {
 	s := &server{service: studio, buildApp: studio}
+	if studio.catalogOK {
+		s.buildCatalog = studio
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/embeddings", s.handleOpenAIEmbeddings)
 	return mux
+}
+
+func catalogFixture() []aistudio.BuildAppModel {
+	return []aistudio.BuildAppModel{
+		{ID: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash", Methods: []string{"countTokens", "generateContent", "streamGenerateContent"}},
+		{ID: "text-embedding-004", DisplayName: "Text Embedding 004", Methods: []string{"batchEmbedContents", "embedContent"}},
+	}
+}
+
+func TestBuildCatalog_rejectsUnknownModelAndMethod(t *testing.T) {
+	tests := []struct {
+		name   string
+		action string
+		body   string
+		want   string
+		status int
+	}{
+		{"unknown model", "gemini-9.9-pro:generateContent", `{"contents":[{"parts":[{"text":"x"}]}],"accountID":"acc-build"}`, "model not available for buildapp account", http.StatusBadRequest},
+		{"embedding on chat model", "gemini-2.5-flash:embedContent", `{"content":{"parts":[{"text":"x"}]},"accountID":"acc-build"}`, "model not available for buildapp account", http.StatusBadRequest},
+		{"generation on embedding model", "text-embedding-004:generateContent", `{"contents":[{"parts":[{"text":"x"}]}],"accountID":"acc-build"}`, "model not available for buildapp account", http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			studio := &recordingStudio{mode: aistudio.AccountModeBuildApp, buildModels: catalogFixture(), catalogOK: true}
+			rec := postGemini(t, geminiHandler(studio), tt.action, tt.body)
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.want) {
+				t.Fatalf("body = %s want %q", rec.Body.String(), tt.want)
+			}
+			if studio.buildCalls != 0 {
+				t.Fatalf("worker started: %d", studio.buildCalls)
+			}
+		})
+	}
+}
+
+func TestBuildCatalog_unavailableIs502WithoutWorker(t *testing.T) {
+	studio := &recordingStudio{
+		mode: aistudio.AccountModeBuildApp, buildModelsErr: aistudio.ErrBuildAppCatalogUnavailable, catalogOK: true,
+	}
+	rec := postGemini(t, geminiHandler(studio), "gemini-2.5-flash:generateContent",
+		`{"contents":[{"parts":[{"text":"x"}]}],"accountID":"acc-build"}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "buildapp catalog unavailable") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+	if studio.buildCalls != 0 {
+		t.Fatalf("worker started: %d", studio.buildCalls)
+	}
+}
+
+func TestBuildCatalog_absentInterfaceKeepsOldBehavior(t *testing.T) {
+	studio := &recordingStudio{mode: aistudio.AccountModeBuildApp, buildResponse: []byte(`{"ok":true}`)}
+	rec := postGemini(t, geminiHandler(studio), "gemini-2.5-flash:generateContent",
+		`{"contents":[{"parts":[{"text":"x"}]}],"accountID":"acc-build"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if studio.buildCalls != 1 {
+		t.Fatalf("buildCalls=%d", studio.buildCalls)
+	}
+}
+
+func TestGeminiModels_buildAccountContext_usesBuildCatalog(t *testing.T) {
+	studio := &recordingStudio{mode: aistudio.AccountModeBuildApp, buildModels: catalogFixture(), catalogOK: true}
+	r := httptest.NewRequest(http.MethodGet, "/v1beta/models?account_id=acc-build", nil)
+	rec := httptest.NewRecorder()
+	geminiHandler(studio).ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Models) != 2 || out.Models[0]["name"] != "models/gemini-2.5-flash" {
+		t.Fatalf("models = %s", rec.Body.String())
+	}
+}
+
+func TestGeminiModels_withoutAccountContext_keepsPlaygroundCatalog(t *testing.T) {
+	studio := &recordingStudio{mode: aistudio.AccountModeBuildApp, buildModels: catalogFixture(), catalogOK: true}
+	r := httptest.NewRequest(http.MethodGet, "/v1beta/models", nil)
+	rec := httptest.NewRecorder()
+	geminiHandler(studio).ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	// recordingStudio.Models 返回 nil → playground 路径输出空列表；Build 目录未被使用
+	if len(out.Models) != 0 || studio.catalogFetches != 0 {
+		t.Fatalf("playground leaked build catalog: models=%d fetches=%d", len(out.Models), studio.catalogFetches)
+	}
+}
+
+func TestHandleOpenAIEmbeddings_unknownModelRejectedByCatalog(t *testing.T) {
+	studio := &recordingStudio{mode: aistudio.AccountModeBuildApp, buildModels: catalogFixture(), catalogOK: true}
+	r := httptest.NewRequest(http.MethodPost, "/v1/embeddings",
+		strings.NewReader(`{"model":"missing-embed","input":"x","account_id":"acc-build"}`))
+	r.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	embeddingsHandler(studio).ServeHTTP(rec, r)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "model not available for buildapp account") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+	if studio.buildCalls != 0 {
+		t.Fatalf("worker started: %d", studio.buildCalls)
+	}
 }
 
 func TestHandleOpenAIEmbeddings_buildAccount_mapsBatchToOpenAIList(t *testing.T) {

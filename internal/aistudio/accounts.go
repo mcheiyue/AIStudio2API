@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	appconfig "github.com/Mag1cFall/AIStudio2API/internal/config"
 	"github.com/Mag1cFall/AIStudio2API/internal/buildapp"
+	appconfig "github.com/Mag1cFall/AIStudio2API/internal/config"
 	"github.com/gofrs/flock"
 )
 
@@ -246,6 +246,7 @@ type AccountPool struct {
 	buildappMu      sync.Mutex
 	camoufoxPath    string
 	wsBasePort      int
+	buildappCatalog *buildAppCatalogCache
 }
 
 // AccountLease 表示一个账户请求槽位
@@ -644,6 +645,7 @@ func NewAccountPool(accounts []*Account, perAccountConcurrency int) *AccountPool
 		resources: make(map[string]string), perAccountConcurrency: perAccountConcurrency, changed: make(chan struct{}),
 		buildappWorkers: make(map[string]*BuildAppWorker), wsBasePort: 9998,
 	}
+	p.buildappCatalog = newBuildAppCatalogCache(p.relayBuildAppListModels)
 	for _, account := range p.accounts {
 		if account == nil {
 			continue

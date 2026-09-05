@@ -2,7 +2,9 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,6 +39,10 @@ func (c *captureWriter) WriteHeader(status int) {
 }
 
 func (s *server) handleGeminiBuildNative(w http.ResponseWriter, r *http.Request, rawBody []byte, model, method, accountID string) {
+	if err := s.checkBuildAppCatalog(r.Context(), accountID, model, method); err != nil {
+		writeBuildAppCatalogError(w, err, writeGeminiError)
+		return
+	}
 	body, path, splitEmbed, err := prepareGeminiBuildNative(rawBody, model, method)
 	if err != nil {
 		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
@@ -81,6 +87,72 @@ func writeCapturedResponse(w http.ResponseWriter, rec *captureWriter, body []byt
 	}
 	w.WriteHeader(code)
 	_, _ = w.Write(body)
+}
+
+// checkBuildAppCatalog 用 Build 独立目录校验 model+method。
+// catalog 未装配（单元 stub）→ 放行；目录拉取失败 → ErrBuildAppCatalogUnavailable；
+// 模型不在目录或不支持该方法 → ErrBuildAppModelNotAvailable。
+func (s *server) checkBuildAppCatalog(ctx context.Context, accountID, model, method string) error {
+	if s.buildCatalog == nil {
+		return nil
+	}
+	models, err := s.buildCatalog.BuildAppModels(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return aistudio.CheckBuildAppMethod(models, model, method)
+}
+
+// writeBuildAppCatalogError 把目录校验错误映射为对应风格的 HTTP 错误：
+// 目录不可用 → 502，模型/方法不允许 → 400。
+func writeBuildAppCatalogError(w http.ResponseWriter, err error, write func(http.ResponseWriter, int, string, string)) {
+	if errors.Is(err, aistudio.ErrBuildAppCatalogUnavailable) {
+		write(w, http.StatusBadGateway, "buildapp_error", err.Error())
+		return
+	}
+	write(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+}
+
+// buildAppCatalogForRequest 解析 models 端点的 buildapp 账号上下文（?account_id=）。
+// 返回 (目录, 是否 buildapp 上下文, 目录错误)；非 buildapp 上下文时三个值全零，调用方走 Playground 原路径。
+func (s *server) buildAppCatalogForRequest(r *http.Request) ([]aistudio.BuildAppModel, bool, error) {
+	if s.buildCatalog == nil {
+		return nil, false, nil
+	}
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	if accountID == "" || s.service.AccountMode(accountID) != aistudio.AccountModeBuildApp {
+		return nil, false, nil
+	}
+	models, err := s.buildCatalog.BuildAppModels(r.Context(), accountID)
+	if err != nil {
+		return nil, true, err
+	}
+	return models, true, nil
+}
+
+func openAIBuildModelObject(m aistudio.BuildAppModel) map[string]any {
+	return map[string]any{
+		"id":                           m.ID,
+		"object":                       "model",
+		"created":                      0,
+		"owned_by":                     "google",
+		"name":                         m.DisplayName,
+		"description":                  m.Description,
+		"supported_generation_methods": m.Methods,
+		"input_token_limit":            m.InputTokenLimit,
+		"output_token_limit":           m.OutputTokenLimit,
+	}
+}
+
+func geminiBuildModelObject(m aistudio.BuildAppModel) map[string]any {
+	return map[string]any{
+		"name":                       "models/" + m.ID,
+		"displayName":                m.DisplayName,
+		"description":                m.Description,
+		"supportedGenerationMethods": m.Methods,
+		"inputTokenLimit":            m.InputTokenLimit,
+		"outputTokenLimit":           m.OutputTokenLimit,
+	}
 }
 
 func prepareGeminiBuildNative(raw []byte, model, method string) ([]byte, string, bool, error) {
@@ -177,6 +249,10 @@ func (s *server) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.Request) 
 	}
 	if request.AccountID == "" || s.service.AccountMode(request.AccountID) != aistudio.AccountModeBuildApp {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "embeddings require a buildapp account_id")
+		return
+	}
+	if err := s.checkBuildAppCatalog(r.Context(), request.AccountID, model, "embedContent"); err != nil {
+		writeBuildAppCatalogError(w, err, writeOpenAIError)
 		return
 	}
 	body, err := buildOpenAIBatchEmbedBody(model, inputs)

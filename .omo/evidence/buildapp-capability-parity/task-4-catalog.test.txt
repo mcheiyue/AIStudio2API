@@ -1,0 +1,2 @@
+ok  	github.com/Mag1cFall/AIStudio2API/internal/aistudio	0.191s
+ok  	github.com/Mag1cFall/AIStudio2API/internal/api	0.312s

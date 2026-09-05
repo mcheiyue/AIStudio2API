@@ -107,6 +107,9 @@ type AdminAccount struct {
 	BuildAppWorker string `json:"build_app_worker,omitempty"`
 	Mode           string `json:"mode,omitempty"`
 	BuildAppURL    string `json:"build_app_url,omitempty"`
+	// Build 目录摘要：仅 mode=buildapp 账号有值；AgeSeconds<0 表示目录不可用
+	BuildAppModels         int   `json:"build_app_models,omitempty"`
+	BuildAppCatalogAgeSecs int64 `json:"build_app_catalog_age_seconds,omitempty"`
 }
 
 // AccountInput 表示已有账户配置
@@ -116,7 +119,7 @@ type AccountInput struct {
 	Proxy       string `json:"proxy"`
 	Locale      string `json:"locale"`
 	Timezone    string `json:"timezone"`
-	Mode        string `json:"mode"`                     // playground | buildapp，空值归一到 playground
+	Mode        string `json:"mode"`                    // playground | buildapp，空值归一到 playground
 	BuildAppURL string `json:"build_app_url,omitempty"` // Mode=buildapp 时的 applet 地址
 }
 

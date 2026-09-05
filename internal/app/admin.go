@@ -744,13 +744,23 @@ func (admin *runtimeAdmin) loginRequest(account *aistudio.Account, directory str
 func adminAccountDTO(pool *aistudio.AccountPool, status aistudio.AccountStatus) api.AdminAccount {
 	models := make([]string, len(status.Models))
 	copy(models, status.Models)
-	return api.AdminAccount{
+	dto := api.AdminAccount{
 		ID: status.ID, Label: status.Label, Enabled: status.Enabled, State: string(status.State),
 		Proxy: status.Proxy, Locale: status.Locale, Timezone: status.Timezone,
 		Models: models, BenefitTier: status.BenefitTier, Message: status.Message,
 		BuildAppWorker: pool.BuildAppWorkerState(status.ID),
 		Mode:           status.Mode, BuildAppURL: status.BuildAppURL,
 	}
+	if status.Mode == aistudio.AccountModeBuildApp {
+		info := pool.BuildAppCatalogInfo(status.ID)
+		dto.BuildAppModels = info.Size
+		if !info.FetchedAt.IsZero() {
+			dto.BuildAppCatalogAgeSecs = int64(time.Since(info.FetchedAt).Seconds())
+		} else if info.Err != nil {
+			dto.BuildAppCatalogAgeSecs = -1
+		}
+	}
+	return dto
 }
 
 func invalidAccount(err error) error {

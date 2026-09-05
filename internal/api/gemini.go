@@ -140,6 +140,17 @@ type geminiToolConfig struct {
 }
 
 func (s *server) handleGeminiModels(w http.ResponseWriter, r *http.Request) {
+	if buildModels, isBuild, err := s.buildAppCatalogForRequest(r); err != nil {
+		writeGeminiError(w, http.StatusBadGateway, "buildapp_error", err.Error())
+		return
+	} else if isBuild {
+		data := make([]map[string]any, 0, len(buildModels))
+		for _, model := range buildModels {
+			data = append(data, geminiBuildModelObject(model))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"models": data})
+		return
+	}
 	models, err := s.service.Models(r.Context())
 	if err != nil {
 		if shouldWriteRequestError(r, err) {
@@ -156,6 +167,19 @@ func (s *server) handleGeminiModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleGeminiModel(w http.ResponseWriter, r *http.Request) {
 	modelID := strings.TrimPrefix(r.PathValue("model"), "models/")
+	if buildModels, isBuild, err := s.buildAppCatalogForRequest(r); err != nil {
+		writeGeminiError(w, http.StatusBadGateway, "buildapp_error", err.Error())
+		return
+	} else if isBuild {
+		for _, model := range buildModels {
+			if model.ID == modelID {
+				writeJSON(w, http.StatusOK, geminiBuildModelObject(model))
+				return
+			}
+		}
+		writeGeminiError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("model %q is unavailable", modelID))
+		return
+	}
 	models, err := s.service.Models(r.Context())
 	if err != nil {
 		if shouldWriteRequestError(r, err) {
@@ -221,6 +245,15 @@ func (s *server) handleGeminiAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isBuild := request.AccountID != "" && s.service.AccountMode(request.AccountID) == aistudio.AccountModeBuildApp
+	if isBuild {
+		switch method {
+		case "countTokens", "embedContent", "batchEmbedContents", "generateContent", "streamGenerateContent":
+			if err := s.checkBuildAppCatalog(r.Context(), request.AccountID, model, method); err != nil {
+				writeBuildAppCatalogError(w, err, writeGeminiError)
+				return
+			}
+		}
+	}
 	if isBuild {
 		switch method {
 		case "countTokens", "embedContent", "batchEmbedContents":

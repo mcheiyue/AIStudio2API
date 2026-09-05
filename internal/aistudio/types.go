@@ -366,3 +366,26 @@ type Service interface {
 type BuildAppService interface {
 	ServeBuildAppEvents(ctx context.Context, body []byte, model string, stream bool, accountID string) (<-chan Event, error)
 }
+
+// BuildAppModel 是 Build 账号独立目录中的一项，与 Playground Model 目录隔离。
+type BuildAppModel struct {
+	ID               string   `json:"id"`
+	DisplayName      string   `json:"display_name"`
+	Description      string   `json:"description,omitempty"`
+	InputTokenLimit  int64    `json:"input_token_limit,omitempty"`
+	OutputTokenLimit int64    `json:"output_token_limit,omitempty"`
+	Methods          []string `json:"methods"`
+}
+
+// BuildAppCatalogInfo 是管理端只读的目录摘要，不触发刷新。
+type BuildAppCatalogInfo struct {
+	Size      int
+	FetchedAt time.Time
+	Err       error
+}
+
+// BuildAppCatalog 为 Build 账号提供独立模型/方法目录。可选接口，未实现则 fail-closed。
+type BuildAppCatalog interface {
+	BuildAppModels(ctx context.Context, accountID string) ([]BuildAppModel, error)
+	BuildAppCatalogInfo(accountID string) BuildAppCatalogInfo
+}
